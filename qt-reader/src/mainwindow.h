@@ -53,6 +53,10 @@ private:
 
     void updateNavigationActions();
     void updateWindowTitle();
+    void updateStatus();
+
+    void applyCtrlWheelZoom(int delta);
+    void applyZoomToViews();
 
     int hrefToChapterIndex(const QString& hrefNoFrag) const;
 
@@ -79,8 +83,9 @@ private:
     QAction* m_rightAct;
     QAction* m_bookmarkAct;
 
-    int  m_currentChapter  = -1;
-    bool m_isRtl           = false;
+    int    m_currentChapter  = -1;
+    bool   m_isRtl           = false;
+    double m_zoomFactor      = 1.0;
     bool m_scrollToEnd     = false;
     QFuture<void> m_prefetchFuture;
 
@@ -88,6 +93,5 @@ private:
     int     m_swapCheckCount = 0;
     static constexpr int kMaxSwapChecks = 32; // 32 × 16ms ≒ 500ms タイムアウト
 
-    // performSwap() 完了後に一度だけ呼ばれるコールバック
     std::function<void()> m_postSwapAction;
 };

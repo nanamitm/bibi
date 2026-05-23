@@ -124,7 +124,10 @@ void MainWindow::setupUi() {
         }, Qt::QueuedConnection);
         // pageReady：スタンバイ View の読み込みが完了したらスワップ検査を開始
         connect(pg, &EpubWebPage::pageReady, this, [this, pg]() {
-            if (m_standbyPage == pg) scheduleSwap();
+            if (m_standbyPage == pg) {
+                applyZoomToViews();
+                scheduleSwap();
+            }
         }, Qt::QueuedConnection);
     }
 
@@ -141,8 +144,7 @@ void MainWindow::setupUi() {
             if (idx >= 0 && idx != m_currentChapter) {
                 m_currentChapter = idx;
                 updateNavigationActions();
-                m_statusLabel->setText(
-                    tr("チャプター: %1 / %2").arg(idx + 1).arg(m_reader->chapterCount()));
+                updateStatus();
             }
         });
     }
@@ -164,12 +166,17 @@ void MainWindow::setupUi() {
     m_swapCheckTimer = new QTimer(this);
     m_swapCheckTimer->setInterval(16); // ~1フレーム間隔でポーリング
     connect(m_swapCheckTimer, &QTimer::timeout, this, &MainWindow::trySwap);
+
+    qApp->installEventFilter(this);
 }
 
 // ── ダブルバッファ: loadFinished 処理 ────────────────────────────────────────
 
 void MainWindow::handleLoadFinished(QWebEngineView* view, bool ok) {
     if (!ok) return;
+
+    // ページ読み込み時に CSS zoom を再適用する（チャプター遷移後もズーム維持）
+    applyZoomToViews();
 
     // ④ 「…」（U+2026）「‥」（U+2025）を縦書き内で回転させる。
     // グローバルな font-feature-settings:"vert" CSS は Chromium が "…" を
@@ -215,6 +222,72 @@ void MainWindow::handleLoadFinished(QWebEngineView* view, bool ok) {
         })();
     )js");
 
+    // 縦書き本文は上下いっぱいに詰まると読みにくいため、約1文字分の余白を入れる。
+    // 画像のみのページには適用しない。
+    view->page()->runJavaScript(R"js(
+        (function() {
+            var html = document.documentElement;
+            var body = document.body || html;
+            var images = Array.from(document.images);
+
+            function hasText(node) {
+                return !!node && (node.innerText || '').trim().length > 0;
+            }
+
+            function isIgnorableElement(el) {
+                var tag = (el.tagName || '').toUpperCase();
+                return tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK' ||
+                       tag === 'META' || tag === 'TITLE';
+            }
+
+            function isImageOnlyPage() {
+                if (!images.length || hasText(body)) return false;
+                var meaningful = Array.from(body.children).filter(function(el) {
+                    return !isIgnorableElement(el);
+                });
+                return meaningful.length > 0 && meaningful.every(function(el) {
+                    if ((el.tagName || '').toUpperCase() === 'IMG') return true;
+                    return el.querySelector && el.querySelector('img');
+                });
+            }
+
+            function isVerticalWriting(el) {
+                if (!el) return false;
+                return (getComputedStyle(el).writingMode || '').indexOf('vertical') === 0;
+            }
+
+            function findTextElement() {
+                var walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
+                    acceptNode: function(node) {
+                        return node.textContent.trim()
+                            ? NodeFilter.FILTER_ACCEPT
+                            : NodeFilter.FILTER_REJECT;
+                    }
+                });
+                var node = walker.nextNode();
+                return node ? node.parentElement : null;
+            }
+
+            var textEl = findTextElement();
+            var vertical = isVerticalWriting(html) ||
+                           isVerticalWriting(body) ||
+                           isVerticalWriting(textEl);
+
+            if (vertical && !isImageOnlyPage()) {
+                body.style.boxSizing = 'border-box';
+                body.style.paddingTop = '1em';
+                body.style.paddingBottom = '1em';
+                html.style.scrollPaddingTop = '1em';
+                html.style.scrollPaddingBottom = '1em';
+            } else {
+                body.style.paddingTop = '';
+                body.style.paddingBottom = '';
+                html.style.scrollPaddingTop = '';
+                html.style.scrollPaddingBottom = '';
+            }
+        })();
+    )js");
+
     // ① 全画像デコード完了後にスクロール位置を確定し、epub-page-ready を通知する
     const int isRtl       = m_isRtl      ? 1 : 0;
     const int scrollToEnd = m_scrollToEnd ? 1 : 0;
@@ -250,17 +323,26 @@ void MainWindow::handleLoadFinished(QWebEngineView* view, bool ok) {
                 var SIGN  = %1;   // 1=LTR, -1=RTL
                 var _busy = false;
                 window.addEventListener('wheel', function(e) {
+                    if (e.ctrlKey) { e.preventDefault(); return; }  // Ctrl+Wheel は C++ イベントフィルターで処理
                     if (e.deltaY === 0) return;
                     e.preventDefault();
-                    var el   = document.documentElement;
-                    var canH = el.scrollWidth  > el.clientWidth;
-                    var canV = el.scrollHeight > el.clientHeight;
-                    if (canH) {
+                    var el    = document.documentElement;
+                    var canH  = el.scrollWidth  > el.clientWidth;
+                    var canV  = el.scrollHeight > el.clientHeight;
+                    var isRtl = SIGN < 0;
+                    if (canH && canV) {
+                        // 上下左右にスクロールバーあり＝ズームによる溢れ。
+                        // 固定ページ（スクロールなし）と同様に即チャプター移動する。
+                        if (!_busy) {
+                            _busy = true;
+                            console.log(SIGN * e.deltaY > 0 ? 'epub-nav:right' : 'epub-nav:left');
+                            setTimeout(function(){ _busy=false; }, 1000);
+                        }
+                    } else if (canH) {
                         var sl    = el.scrollLeft;
                         var max   = Math.max(0, el.scrollWidth - el.clientWidth);
                         var absSl = Math.abs(sl);
                         var dx    = SIGN * e.deltaY;
-                        var isRtl = SIGN < 0;
                         // LTR: 左端=absSl≈0、右端=absSl≈max
                         // RTL: 左端=absSl≈max（読み終わり）、右端=absSl≈0（読み始め）
                         var atLeft  = isRtl ? absSl >= max - 2 : absSl <= 2;
@@ -350,7 +432,13 @@ void MainWindow::handleLoadFinished(QWebEngineView* view, bool ok) {
                     var canH = maxH > 2;
                     var canV = maxV > 2;
 
-                    if (canH) {
+                    if (canH && canV) {
+                        // 上下左右にスクロールバーあり＝ズームによる溢れ。固定ページ扱い。
+                        if (left)       navLeft();
+                        else if (right) navRight();
+                        else if (up)    navUp();
+                        else            navDown();
+                    } else if (canH) {
                         // ↑ → は右スクロール、↓ ← は左スクロール（+ 端でチャプター移動）
                         var goRight = right || up;
                         var goLeft  = left  || down;
@@ -385,6 +473,60 @@ void MainWindow::handleLoadFinished(QWebEngineView* view, bool ok) {
                 }, true);
             })();
         )js").arg(rtl));
+
+    // ④' ドラッグ＝パン：canH && canV（ズームで両スクロールバーあり）のときマウスドラッグでスクロール
+    view->page()->runJavaScript(R"js(
+        (function() {
+            if (window._bibiDragInstalled) return;
+            window._bibiDragInstalled = true;
+
+            var drag = { active: false, x: 0, y: 0, sl: 0, st: 0 };
+
+            function bothScrollbars() {
+                var el = document.documentElement;
+                return el.scrollWidth > el.clientWidth && el.scrollHeight > el.clientHeight;
+            }
+
+            document.addEventListener('mousedown', function(e) {
+                if (e.button !== 0 || !bothScrollbars()) return;
+                // リンク・フォーム要素は通常動作を優先
+                var t = e.target;
+                while (t && t !== document.body) {
+                    var tn = (t.tagName || '').toUpperCase();
+                    if (tn === 'A' || tn === 'INPUT' || tn === 'TEXTAREA' ||
+                        tn === 'SELECT' || tn === 'BUTTON') return;
+                    t = t.parentNode;
+                }
+                var el = document.documentElement;
+                drag.active = true;
+                drag.x  = e.clientX;  drag.y  = e.clientY;
+                drag.sl = el.scrollLeft; drag.st = el.scrollTop;
+                el.style.cursor = 'grabbing';
+                el.style.userSelect = 'none';
+                e.preventDefault();
+            }, true);
+
+            document.addEventListener('mousemove', function(e) {
+                if (drag.active) {
+                    var el = document.documentElement;
+                    el.scrollLeft = drag.sl + (drag.x - e.clientX);
+                    el.scrollTop  = drag.st + (drag.y - e.clientY);
+                } else {
+                    document.documentElement.style.cursor = bothScrollbars() ? 'grab' : '';
+                }
+            }, true);
+
+            function endDrag() {
+                if (!drag.active) return;
+                drag.active = false;
+                var el = document.documentElement;
+                el.style.cursor = bothScrollbars() ? 'grab' : '';
+                el.style.userSelect = '';
+            }
+            document.addEventListener('mouseup',    endDrag, true);
+            document.addEventListener('mouseleave', endDrag, true);
+        })();
+    )js");
 
     // 前後チャプターをバックグラウンドで先読みする
     const int cur      = m_currentChapter;
@@ -439,6 +581,19 @@ void MainWindow::performSwap() {
 }
 
 bool MainWindow::eventFilter(QObject* obj, QEvent* event) {
+    if (event->type() == QEvent::Wheel) {
+        auto* we = static_cast<QWheelEvent*>(event);
+        if (we->modifiers() & Qt::ControlModifier) {
+            QObject* p = obj;
+            while (p) {
+                if (p == m_viewA || p == m_viewB) {
+                    applyCtrlWheelZoom(we->angleDelta().y());
+                    return true;
+                }
+                p = p->parent();
+            }
+        }
+    }
     // コンテナのリサイズに合わせて両 View を同じサイズにする
     if (obj == m_viewContainer && event->type() == QEvent::Resize) {
         const QSize s = m_viewContainer->size();
@@ -473,21 +628,23 @@ void MainWindow::setupMenuBar() {
     auto* zoomInAct = viewMenu->addAction(tr("拡大"));
     zoomInAct->setShortcut(QKeySequence::ZoomIn);
     connect(zoomInAct, &QAction::triggered, this, [this] {
-        double f = qMin(m_activeView->zoomFactor() + 0.1, 4.0);
-        m_viewA->setZoomFactor(f); m_viewB->setZoomFactor(f);
+        m_zoomFactor = qMin(m_zoomFactor + 0.1, 4.0);
+        applyZoomToViews(); updateStatus();
     });
 
     auto* zoomOutAct = viewMenu->addAction(tr("縮小"));
     zoomOutAct->setShortcut(QKeySequence::ZoomOut);
     connect(zoomOutAct, &QAction::triggered, this, [this] {
-        double f = qMax(m_activeView->zoomFactor() - 0.1, 0.25);
-        m_viewA->setZoomFactor(f); m_viewB->setZoomFactor(f);
+        m_zoomFactor = qMax(m_zoomFactor - 0.1, 0.25);
+        applyZoomToViews(); updateStatus();
     });
 
     auto* resetZoomAct = viewMenu->addAction(tr("標準サイズ"));
     resetZoomAct->setShortcut(Qt::CTRL | Qt::Key_0);
-    connect(resetZoomAct, &QAction::triggered, this,
-            [this] { m_viewA->setZoomFactor(1.0); m_viewB->setZoomFactor(1.0); });
+    connect(resetZoomAct, &QAction::triggered, this, [this] {
+        m_zoomFactor = 1.0;
+        applyZoomToViews(); updateStatus();
+    });
 
     viewMenu->addSeparator();
 
@@ -607,8 +764,7 @@ void MainWindow::goToChapter(int index) {
     // アクティブ View は完成済みの旧ページを表示し続けるためフラッシュしない。
     m_standbyView->setUrl(QUrl("epub:///" + ch.href));
     updateNavigationActions();
-    m_statusLabel->setText(
-        tr("チャプター: %1 / %2").arg(index + 1).arg(m_reader->chapterCount()));
+    updateStatus();
 }
 
 void MainWindow::goToHref(const QString& href) {
@@ -626,8 +782,7 @@ void MainWindow::goToHref(const QString& href) {
     m_standbyView->setUrl(url);
 
     updateNavigationActions();
-    m_statusLabel->setText(
-        tr("チャプター: %1 / %2").arg(idx + 1).arg(m_reader->chapterCount()));
+    updateStatus();
 }
 
 int MainWindow::hrefToChapterIndex(const QString& path) const {
@@ -753,6 +908,150 @@ void MainWindow::showSearch() {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
+
+void MainWindow::applyCtrlWheelZoom(int delta) {
+    if (delta > 0)       // ホイール上 = 拡大
+        m_zoomFactor = qMin(m_zoomFactor + 0.1, 4.0);
+    else if (delta < 0)  // ホイール下 = 縮小
+        m_zoomFactor = qMax(m_zoomFactor - 0.1, 0.25);
+    m_zoomFactor = qRound(m_zoomFactor * 100.0) / 100.0;
+    applyZoomToViews();
+    updateStatus();
+}
+
+void MainWindow::applyZoomToViews() {
+    // ビューポートサイズを変えない CSS zoom で両 View をスケールする。
+    // setZoomFactor は CSS ビューポートを縮小するため、100vw/100vh 指定の
+    // EPUB コンテンツがリサイズされてズームが相殺される問題を回避する。
+    // ズーム時は overflow を auto に強制してスクロールバーを出す
+    // （EPUB が overflow:hidden を持つ場合でも拡大後にパンできるようにする）。
+    const QString js = QString(R"js(
+        (function() {
+            var zoom = %1;
+            var html = document.documentElement;
+            var body = document.body || html;
+            var images = Array.from(document.images);
+
+            function resetImageZoom() {
+                body.style.width = '';
+                body.style.height = '';
+                body.style.minWidth = '';
+                body.style.minHeight = '';
+                images.forEach(function(img) {
+                    if (img.dataset.bibiImageZoomOnly === '1') {
+                        img.style.width = '';
+                        img.style.height = '';
+                        img.style.maxWidth = '';
+                        img.style.maxHeight = '';
+                    }
+                    var node = img.parentElement;
+                    while (node && node !== body) {
+                        if (node.dataset && node.dataset.bibiZoomContainer === '1') {
+                            node.style.overflow = '';
+                            node.style.maxWidth = '';
+                            node.style.maxHeight = '';
+                            node.style.width = '';
+                            node.style.height = '';
+                        }
+                        node = node.parentElement;
+                    }
+                });
+            }
+
+            function isIgnorableElement(el) {
+                var tag = (el.tagName || '').toUpperCase();
+                return tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK' ||
+                       tag === 'META' || tag === 'TITLE';
+            }
+
+            function isImageOnlyPage() {
+                if (!images.length) return false;
+                if ((body.innerText || '').trim().length > 0) return false;
+
+                var meaningful = Array.from(body.children).filter(function(el) {
+                    return !isIgnorableElement(el);
+                });
+                if (!meaningful.length) return false;
+
+                return meaningful.every(function(el) {
+                    if ((el.tagName || '').toUpperCase() === 'IMG') return true;
+                    return el.querySelector && el.querySelector('img');
+                });
+            }
+
+            function rememberBaseSize(img) {
+                if (img.dataset.bibiBaseWidth && img.dataset.bibiBaseHeight) return;
+
+                var rect = img.getBoundingClientRect();
+                img.dataset.bibiBaseWidth = String(rect.width || img.naturalWidth || img.width);
+                img.dataset.bibiBaseHeight = String(rect.height || img.naturalHeight || img.height);
+            }
+
+            function applyImageZoom() {
+                body.style.zoom = '';
+                body.style.width = 'max-content';
+                body.style.height = 'auto';
+                body.style.minWidth = '100%';
+                body.style.minHeight = '100%';
+
+                images.forEach(function(img) {
+                    rememberBaseSize(img);
+                    img.dataset.bibiImageZoomOnly = '1';
+                    img.style.maxWidth = 'none';
+                    img.style.maxHeight = 'none';
+                    img.style.width = ((parseFloat(img.dataset.bibiBaseWidth) || img.naturalWidth || img.width) * zoom) + 'px';
+                    img.style.height = ((parseFloat(img.dataset.bibiBaseHeight) || img.naturalHeight || img.height) * zoom) + 'px';
+
+                    var node = img.parentElement;
+                    while (node && node !== body) {
+                        node.dataset.bibiZoomContainer = '1';
+                        node.style.overflow = 'visible';
+                        node.style.maxWidth = 'none';
+                        node.style.maxHeight = 'none';
+                        node.style.width = 'max-content';
+                        node.style.height = 'auto';
+                        node = node.parentElement;
+                    }
+                });
+            }
+
+            resetImageZoom();
+            if (zoom === 1) {
+                body.style.zoom = '';
+                html.style.overflow = '';
+                body.style.overflow = '';
+            } else {
+                html.style.overflow = 'auto';
+                body.style.overflow = 'auto';
+                if (isImageOnlyPage()) {
+                    applyImageZoom();
+                } else {
+                    body.style.zoom = zoom;
+                }
+            }
+        })();
+    )js").arg(m_zoomFactor);
+
+    // Chromium の Ctrl+Wheel 内部ズームが setZoomFactor を変更した場合にリセットする。
+    // setZoomFactor はビューポートサイズを変更するため、EPUB の vw/vh 指定画像の
+    // 表示サイズが変わり CSS zoom と打ち消し合う。CSS zoom のみを使うので常に 1.0 に保つ。
+    if (m_viewA && qAbs(m_viewA->zoomFactor() - 1.0) > 1e-6) m_viewA->setZoomFactor(1.0);
+    if (m_viewB && qAbs(m_viewB->zoomFactor() - 1.0) > 1e-6) m_viewB->setZoomFactor(1.0);
+    auto apply = [&js](QWebEngineView* view) {
+        if (view && view->page()) view->page()->runJavaScript(js);
+    };
+    apply(m_activeView);
+    apply(m_standbyView);
+}
+
+void MainWindow::updateStatus() {
+    if (!m_reader->isOpen() || m_currentChapter < 0) return;
+    m_statusLabel->setText(
+        tr("チャプター: %1 / %2   ズーム: %3%")
+            .arg(m_currentChapter + 1)
+            .arg(m_reader->chapterCount())
+            .arg(qRound(m_zoomFactor * 100)));
+}
 
 void MainWindow::updateNavigationActions() {
     bool has     = m_reader->isOpen();

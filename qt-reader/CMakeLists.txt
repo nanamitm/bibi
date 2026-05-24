@@ -29,6 +29,7 @@ set(SOURCES
     src/bookmarkmanager.cpp
     src/recentfiles.cpp
     src/searchdialog.cpp
+    resources.qrc
 )
 
 if(APPLE)
@@ -39,7 +40,7 @@ if(APPLE)
         MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
     )
 elseif(WIN32)
-    qt_add_executable(BibiQtReader WIN32 ${SOURCES})
+    qt_add_executable(BibiQtReader WIN32 ${SOURCES} app.rc)
 else()
     qt_add_executable(BibiQtReader ${SOURCES})
 endif()

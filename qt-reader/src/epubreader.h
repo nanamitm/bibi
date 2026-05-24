@@ -54,6 +54,7 @@ public:
 
     struct SearchResult {
         int     chapterIndex;
+        int     occurrenceIndex = 0;
         QString chapterTitle;
         QString context;
         QString href;

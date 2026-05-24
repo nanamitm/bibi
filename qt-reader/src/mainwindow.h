@@ -2,6 +2,7 @@
 #include <QMainWindow>
 #include <QFuture>
 #include <QTimer>
+#include <QSet>
 #include <functional>
 #include "epubreader.h"
 #include "bookmarkmanager.h"
@@ -17,6 +18,7 @@ class QLabel;
 class QProgressBar;
 class QAction;
 class QMenu;
+class QLineEdit;
 class EpubUrlScheme;
 
 class MainWindow : public QMainWindow {
@@ -32,9 +34,29 @@ protected:
     bool eventFilter(QObject* obj, QEvent* event) override;
 
 private:
+    struct BufferedChapter {
+        int chapterIndex = -1;
+        bool ready = false;
+        bool forNavigation = false;
+        bool scrollToEnd = false;
+    };
+
+    struct BufferedView {
+        QWebEngineView* view = nullptr;
+        EpubWebPage* page = nullptr;
+        BufferedChapter chapter;
+    };
+
+    enum class PreloadMode {
+        None,
+        NextOnly,
+        NextAndPrevious
+    };
+
     void setupUi();
     void setupMenuBar();
     void setupToolBar();
+    void setupSearchBar();
 
     void handleLoadFinished(QWebEngineView* view, bool ok);
     void scheduleSwap();
@@ -43,11 +65,16 @@ private:
 
     void goToChapter(int index);
     void goToHref(const QString& href);
-    void loadStandbyChapter(int index, bool scrollToEnd, bool forNavigation);
-    void preloadNextChapter();
+    void loadBufferedChapter(BufferedView& buffer, int index, bool scrollToEnd, bool forNavigation);
+    void refreshPreloads();
+    void invalidatePreloads();
     int nextReadingChapterIndex() const;
-    void clearStandbyChapter();
-    bool standbyChapterMatches(int index, bool scrollToEnd) const;
+    int previousReadingChapterIndex() const;
+    bool bufferedChapterMatches(const BufferedView& buffer, int index, bool scrollToEnd) const;
+    BufferedView* bufferForPage(EpubWebPage* page);
+    const BufferedView* bufferForPage(EpubWebPage* page) const;
+    bool scrollToEndForView(QWebEngineView* view) const;
+    void promoteBuffer(BufferedView& buffer);
     void goToCover();
     void goToBookEnd();
     void nextChapter(bool scrollToEnd = false);
@@ -59,6 +86,15 @@ private:
     void addBookmark();
     void manageBookmarks();
     void showSearch();
+    void runSearch();
+    void searchNext();
+    void searchPrevious();
+    void openSearchResults();
+    void closeSearchBar();
+    void clearSearchHighlights();
+    void showSettings();
+    int firstSearchResultAtOrAfterCurrentChapter() const;
+    int lastSearchResultAtOrBeforeCurrentChapter() const;
 
     void populateToc(const QList<NavPoint>& pts, QTreeWidgetItem* parent = nullptr);
     void onTocItemClicked(QTreeWidgetItem* item, int column);
@@ -68,14 +104,20 @@ private:
     void showReaderContextMenu(QWebEngineView* view, const QPoint& pos);
     void jumpToBookmark(const Bookmark& bm);
     void jumpToReadingPosition(const ReadingPosition& pos);
+    void jumpToSearchResult(int chapterIndex, const QString& query, int occurrenceIndex = 0);
     void saveCurrentReadingPosition();
     QString chapterLabel(int chapterIndex) const;
 
     void updateNavigationActions();
     void updateWindowTitle();
     void updateStatus();
+    void updatePageBackgroundColor();
+    void setViewLoaded(QWebEngineView* view, bool loaded);
 
     void setZoomFactor(double zoomFactor, bool saveSetting = true);
+    void setPreloadMode(PreloadMode mode, bool saveSetting = true);
+    int preloadModeToIndex(PreloadMode mode) const;
+    PreloadMode preloadModeFromIndex(int index) const;
     void applyCtrlWheelZoom(int delta);
     void applyZoomToViews();
 
@@ -85,23 +127,21 @@ private:
     BookmarkManager* m_bookmarkManager;
     EpubUrlScheme*   m_urlScheme;
 
-    struct BufferedChapter {
-        int chapterIndex = -1;
-        bool ready = false;
-        bool forNavigation = false;
-        bool scrollToEnd = false;
-    };
-
-    // ダブルバッファ: m_activeView が表示中、m_standbyView がバックグラウンド読み込み
+    // ダブルバッファ: m_activeView が表示中、m_standby がバックグラウンド読み込み
     QWidget*         m_viewContainer  = nullptr;
     QWebEngineView*  m_viewA          = nullptr;
     QWebEngineView*  m_viewB          = nullptr;
+    QWebEngineView*  m_viewC          = nullptr;
     EpubWebPage*     m_pageA          = nullptr;
     EpubWebPage*     m_pageB          = nullptr;
+    EpubWebPage*     m_pageC          = nullptr;
     QWebEngineView*  m_activeView     = nullptr;   // 現在表示中
-    QWebEngineView*  m_standbyView    = nullptr;   // バックグラウンド読み込み中
     EpubWebPage*     m_activePage     = nullptr;
-    EpubWebPage*     m_standbyPage    = nullptr;
+    BufferedView     m_nextBuffer;
+    BufferedView     m_previousBuffer;
+    BufferedView*    m_swapBuffer = nullptr;
+    int              m_swapFromChapter = -1;
+    int              m_swapToChapter = -1;
 
     QTreeWidget*     m_tocTree;
     QTabWidget*      m_sideTabs;
@@ -117,12 +157,26 @@ private:
     QAction* m_bookmarkAct;
     RecentFiles* m_recentFiles = nullptr;
 
+    QToolBar* m_searchBar = nullptr;
+    QLineEdit* m_searchEdit = nullptr;
+    QLabel* m_searchCountLabel = nullptr;
+    QAction* m_searchPrevAct = nullptr;
+    QAction* m_searchNextAct = nullptr;
+    QAction* m_searchListAct = nullptr;
+    QAction* m_searchMenuAct = nullptr;
+    QList<EpubReader::SearchResult> m_searchResults;
+    QString m_searchQuery;
+    int m_searchIndex = -1;
+    QString m_highlightedSearchQuery;
+    int m_highlightedSearchChapter = -1;
+
     int    m_currentChapter  = -1;
     bool   m_isRtl           = false;
     double m_zoomFactor      = 1.0;
     double m_currentScrollPosition = 0.0;
     bool m_scrollToEnd     = false;
-    BufferedChapter m_standbyChapter;
+    PreloadMode m_preloadMode = PreloadMode::NextAndPrevious;
+    QSet<QWebEngineView*> m_loadedViews;
     QFuture<void> m_prefetchFuture;
 
     QTimer* m_swapCheckTimer = nullptr;

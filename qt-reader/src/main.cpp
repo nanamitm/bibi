@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QIcon>
 #include <QWebEngineUrlScheme>
 #include "mainwindow.h"
 
@@ -24,6 +25,7 @@ int main(int argc, char* argv[]) {
     app.setApplicationVersion("1.0.0");
     app.setOrganizationName("Bibi");
     app.setOrganizationDomain("bibi.epub.link");
+    app.setWindowIcon(QIcon(":/icons/app.ico"));
 
     MainWindow window;
     window.show();

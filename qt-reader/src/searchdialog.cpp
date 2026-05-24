@@ -36,6 +36,19 @@ SearchDialog::SearchDialog(EpubReader* reader, QWidget* parent)
             this,         &SearchDialog::onItemActivated);
 }
 
+void SearchDialog::setResults(const QString& query, const QList<EpubReader::SearchResult>& results, int currentIndex) {
+    m_searchEdit->setText(query);
+    m_results = results;
+    m_resultList->clear();
+    for (const auto& r : m_results) {
+        QString line = QString("[%1]  %2").arg(r.chapterTitle, r.context);
+        m_resultList->addItem(line);
+    }
+    if (currentIndex >= 0 && currentIndex < m_resultList->count())
+        m_resultList->setCurrentRow(currentIndex);
+    m_statusLabel->setText(tr("%1 件見つかりました。").arg(m_results.size()));
+}
+
 void SearchDialog::performSearch() {
     m_resultList->clear();
     m_results.clear();
@@ -58,7 +71,10 @@ void SearchDialog::performSearch() {
 void SearchDialog::onItemActivated(QListWidgetItem* item) {
     int row = m_resultList->row(item);
     if (row >= 0 && row < m_results.size()) {
-        emit resultSelected(m_results[row].chapterIndex, m_results[row].href);
-        accept();
+        emit resultSelected(row,
+                            m_results[row].chapterIndex,
+                            m_results[row].href,
+                            m_searchEdit->text().trimmed(),
+                            m_results[row].occurrenceIndex);
     }
 }

@@ -1,6 +1,7 @@
 #include "epubreader.h"
 #include <miniz.h>
 #include <QDomDocument>
+#include <QDomText>
 #include <QFile>
 #include <QFileInfo>
 #include <QUrl>
@@ -409,17 +410,86 @@ QList<NavPoint> EpubReader::parseNavList(const QDomElement& olEl,
 
 // ── Full-text search ──────────────────────────────────────────────────────
 
-static QString stripHtml(const QString& html) {
-    static const QRegularExpression tags(R"(<[^>]*>)");
+static bool isIgnorableSearchElement(const QString& tagName) {
+    const QString tag = tagName.toLower();
+    return tag == "script" || tag == "style" || tag == "title" ||
+           tag == "meta" || tag == "link" || tag == "head";
+}
+
+static bool isImageOnlyElement(const QDomElement& el) {
+    if (el.isNull() || isIgnorableSearchElement(el.tagName())) return true;
+
+    const QString tag = el.tagName().toLower();
+    if (tag == "img" || tag == "svg" || tag == "object" || tag == "picture")
+        return true;
+
+    for (QDomNode n = el.firstChild(); !n.isNull(); n = n.nextSibling()) {
+        if (n.isText()) {
+            if (!n.nodeValue().trimmed().isEmpty())
+                return false;
+            continue;
+        }
+        if (n.isElement() && !isImageOnlyElement(n.toElement()))
+            return false;
+    }
+    return true;
+}
+
+static void appendVisibleText(const QDomNode& node, QStringList& out) {
+    if (node.isText()) {
+        const QString text = node.nodeValue().simplified();
+        if (!text.isEmpty())
+            out.append(text);
+        return;
+    }
+
+    if (!node.isElement() && !node.isDocument()) return;
+    const QDomElement el = node.toElement();
+    if (!el.isNull()) {
+        if (isIgnorableSearchElement(el.tagName())) return;
+        const QString tag = el.tagName().toLower();
+        if (tag == "img" || tag == "svg" || tag == "object" || tag == "picture")
+            return;
+    }
+
+    for (QDomNode child = node.firstChild(); !child.isNull(); child = child.nextSibling())
+        appendVisibleText(child, out);
+}
+
+static QString extractSearchText(const QString& html) {
     static const QRegularExpression nbsp("&nbsp;");
-    QString text = html;
-    text.remove(tags);
+
+    QDomDocument doc;
+    QString error;
+    int line = 0;
+    int column = 0;
+    if (!doc.setContent(html, &error, &line, &column)) {
+        static const QRegularExpression tags(R"(<[^>]*>)");
+        QString text = html;
+        text.remove(tags);
+        text.replace("&lt;",   "<");
+        text.replace("&gt;",   ">");
+        text.replace("&amp;",  "&");
+        text.replace("&quot;", "\"");
+        text.replace(nbsp,     " ");
+        return text.simplified();
+    }
+
+    QDomElement body = doc.elementsByTagName("body").at(0).toElement();
+    if (body.isNull())
+        body = doc.documentElement();
+    if (isImageOnlyElement(body))
+        return {};
+
+    QStringList parts;
+    appendVisibleText(body, parts);
+    QString text = parts.join(' ');
     text.replace("&lt;",   "<");
     text.replace("&gt;",   ">");
     text.replace("&amp;",  "&");
     text.replace("&quot;", "\"");
     text.replace(nbsp,     " ");
-    return text;
+    return text.simplified();
 }
 
 QList<EpubReader::SearchResult> EpubReader::search(const QString& query) const {
@@ -446,22 +516,27 @@ QList<EpubReader::SearchResult> EpubReader::search(const QString& query) const {
         QByteArray raw = fileData(ch.href);
         if (raw.isEmpty()) continue;
 
-        QString text = stripHtml(QString::fromUtf8(raw));
-        auto match   = re.match(text);
-        if (!match.hasMatch()) continue;
+        QString text = extractSearchText(QString::fromUtf8(raw));
+        if (text.isEmpty()) continue;
+        auto it = re.globalMatch(text);
+        int occurrenceIndex = 0;
+        while (it.hasNext()) {
+            auto match = it.next();
+            if (!match.hasMatch()) continue;
 
-        int pos   = match.capturedStart();
-        int start = qMax(0, pos - 80);
-        int end   = qMin(text.size(), pos + static_cast<int>(query.size()) + 80);
+            int pos   = match.capturedStart();
+            int start = qMax(0, pos - 80);
+            int end   = qMin(text.size(), pos + static_cast<int>(query.size()) + 80);
 
-        SearchResult sr;
-        sr.chapterIndex  = i;
-        sr.href          = ch.href;
-        sr.chapterTitle  = hrefToTitle.value(ch.href,
-                               QString("Chapter %1").arg(i + 1));
-        sr.context = "..." + text.mid(start, end - start).simplified() + "...";
-        results.append(sr);
+            SearchResult sr;
+            sr.chapterIndex    = i;
+            sr.occurrenceIndex = occurrenceIndex++;
+            sr.href            = ch.href;
+            sr.chapterTitle    = hrefToTitle.value(ch.href,
+                                     QString("Chapter %1").arg(i + 1));
+            sr.context = "..." + text.mid(start, end - start).simplified() + "...";
+            results.append(sr);
+        }
     }
     return results;
 }
-

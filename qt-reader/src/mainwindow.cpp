@@ -3,11 +3,15 @@
 #include "searchdialog.h"
 #include <QtConcurrent/QtConcurrent>
 #include <QEvent>
+#include <QEventLoop>
+#include <QPointer>
 #include <QResizeEvent>
 #include <QWebEngineView>
 #include <QWebEngineProfile>
 #include <QWebEnginePage>
+#include <QTabWidget>
 #include <QTreeWidget>
+#include <QHeaderView>
 #include <QSplitter>
 #include <QLabel>
 #include <QMenuBar>
@@ -16,6 +20,7 @@
 #include <QToolBar>
 #include <QStatusBar>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QMessageBox>
 #include <QInputDialog>
 #include <QLineEdit>
@@ -25,6 +30,24 @@
 #include <QSettings>
 #include <QUrl>
 #include <QWebEngineSettings>
+#include <QPoint>
+#include <memory>
+
+namespace {
+class BookmarkTreeItem : public QTreeWidgetItem {
+public:
+    using QTreeWidgetItem::QTreeWidgetItem;
+
+    bool operator<(const QTreeWidgetItem& other) const override {
+        const int col = treeWidget() ? treeWidget()->sortColumn() : 0;
+        if (col == 2)
+            return data(col, Qt::UserRole).toInt() < other.data(col, Qt::UserRole).toInt();
+        if (col == 3)
+            return data(col, Qt::UserRole).toDateTime() < other.data(col, Qt::UserRole).toDateTime();
+        return text(col).localeAwareCompare(other.text(col)) < 0;
+    }
+};
+}
 
 // ── Constructor / Destructor ──────────────────────────────────────────────
 
@@ -37,6 +60,8 @@ MainWindow::MainWindow(QWidget* parent)
     setupUi();
     setupMenuBar();
     setupToolBar();
+    loadRecentFiles();
+    updateRecentFilesMenu();
 
     setWindowTitle(tr("Bibi Qt Reader"));
     resize(1200, 800);
@@ -53,6 +78,7 @@ MainWindow::~MainWindow() = default;
 
 
 void MainWindow::closeEvent(QCloseEvent* event) {
+    saveCurrentReadingPosition();
     m_prefetchFuture.waitForFinished();
     QSettings s;
     s.setValue("geometry",    saveGeometry());
@@ -66,11 +92,34 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 void MainWindow::setupUi() {
     m_splitter = new QSplitter(Qt::Horizontal, this);
 
-    m_tocTree = new QTreeWidget(m_splitter);
+    m_sideTabs = new QTabWidget(m_splitter);
+    m_sideTabs->setMinimumWidth(200);
+    m_sideTabs->setMaximumWidth(380);
+
+    m_tocTree = new QTreeWidget(m_sideTabs);
     m_tocTree->setHeaderLabel(tr("目次"));
     m_tocTree->setMinimumWidth(180);
-    m_tocTree->setMaximumWidth(360);
     m_tocTree->setAnimated(true);
+
+    m_bookmarkTree = new QTreeWidget(m_sideTabs);
+    m_bookmarkTree->setHeaderLabels({tr("しおり"), tr("章"), tr("位置"), tr("作成日時")});
+    m_bookmarkTree->setRootIsDecorated(false);
+    m_bookmarkTree->setAlternatingRowColors(true);
+    m_bookmarkTree->setSortingEnabled(true);
+    m_bookmarkTree->setContextMenuPolicy(Qt::CustomContextMenu);
+    m_bookmarkTree->setTextElideMode(Qt::ElideRight);
+    m_bookmarkTree->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_bookmarkTree->header()->setStretchLastSection(false);
+    m_bookmarkTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_bookmarkTree->header()->setSectionResizeMode(1, QHeaderView::Interactive);
+    m_bookmarkTree->header()->setSectionResizeMode(2, QHeaderView::Fixed);
+    m_bookmarkTree->header()->setSectionResizeMode(3, QHeaderView::Interactive);
+    m_bookmarkTree->setColumnWidth(1, 86);
+    m_bookmarkTree->setColumnWidth(2, 52);
+    m_bookmarkTree->setColumnWidth(3, 118);
+
+    m_sideTabs->addTab(m_tocTree, tr("目次"));
+    m_sideTabs->addTab(m_bookmarkTree, tr("しおり"));
 
     auto* profile = new QWebEngineProfile("BibiQtReader", this);
     profile->installUrlSchemeHandler("epub", m_urlScheme);
@@ -133,6 +182,11 @@ void MainWindow::setupUi() {
 
     // loadFinished：どちらの View が発火しても同じ JS を注入する
     for (QWebEngineView* view : {m_viewA, m_viewB}) {
+        view->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(view, &QWidget::customContextMenuRequested,
+                this, [this, view](const QPoint& pos) {
+                    showReaderContextMenu(view, pos);
+                });
         connect(view, &QWebEngineView::loadFinished, this, [this, view](bool ok) {
             handleLoadFinished(view, ok);
         });
@@ -149,7 +203,7 @@ void MainWindow::setupUi() {
         });
     }
 
-    m_splitter->addWidget(m_tocTree);
+    m_splitter->addWidget(m_sideTabs);
     m_splitter->addWidget(m_viewContainer);
     m_splitter->setStretchFactor(0, 0);
     m_splitter->setStretchFactor(1, 1);
@@ -162,6 +216,10 @@ void MainWindow::setupUi() {
 
     connect(m_tocTree, &QTreeWidget::itemClicked,
             this,      &MainWindow::onTocItemClicked);
+    connect(m_bookmarkTree, &QTreeWidget::itemActivated,
+            this,           &MainWindow::onBookmarkActivated);
+    connect(m_bookmarkTree, &QTreeWidget::customContextMenuRequested,
+            this,           &MainWindow::showBookmarkContextMenu);
 
     m_swapCheckTimer = new QTimer(this);
     m_swapCheckTimer->setInterval(16); // ~1フレーム間隔でポーリング
@@ -226,65 +284,118 @@ void MainWindow::handleLoadFinished(QWebEngineView* view, bool ok) {
     // 画像のみのページには適用しない。
     view->page()->runJavaScript(R"js(
         (function() {
-            var html = document.documentElement;
-            var body = document.body || html;
-            var images = Array.from(document.images);
+            window._bibiApplyReadingInsets = function() {
+                var html = document.documentElement;
+                var body = document.body || html;
+                var images = Array.from(document.images);
 
-            function hasText(node) {
-                return !!node && (node.innerText || '').trim().length > 0;
-            }
+                function hasText(node) {
+                    return !!node && (node.innerText || '').trim().length > 0;
+                }
 
-            function isIgnorableElement(el) {
-                var tag = (el.tagName || '').toUpperCase();
-                return tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK' ||
-                       tag === 'META' || tag === 'TITLE';
-            }
+                function isIgnorableElement(el) {
+                    var tag = (el.tagName || '').toUpperCase();
+                    return tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK' ||
+                           tag === 'META' || tag === 'TITLE';
+                }
 
-            function isImageOnlyPage() {
-                if (!images.length || hasText(body)) return false;
-                var meaningful = Array.from(body.children).filter(function(el) {
-                    return !isIgnorableElement(el);
-                });
-                return meaningful.length > 0 && meaningful.every(function(el) {
-                    if ((el.tagName || '').toUpperCase() === 'IMG') return true;
-                    return el.querySelector && el.querySelector('img');
-                });
-            }
+                function isImageOnlyPage() {
+                    if (!images.length || hasText(body)) return false;
+                    var meaningful = Array.from(body.children).filter(function(el) {
+                        return !isIgnorableElement(el);
+                    });
+                    return meaningful.length > 0 && meaningful.every(function(el) {
+                        if ((el.tagName || '').toUpperCase() === 'IMG') return true;
+                        return el.querySelector && el.querySelector('img');
+                    });
+                }
 
-            function isVerticalWriting(el) {
-                if (!el) return false;
-                return (getComputedStyle(el).writingMode || '').indexOf('vertical') === 0;
-            }
+                function isVerticalWriting(el) {
+                    if (!el) return false;
+                    return (getComputedStyle(el).writingMode || '').indexOf('vertical') === 0;
+                }
 
-            function findTextElement() {
-                var walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
-                    acceptNode: function(node) {
-                        return node.textContent.trim()
-                            ? NodeFilter.FILTER_ACCEPT
-                            : NodeFilter.FILTER_REJECT;
+                function findTextElement() {
+                    var walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
+                        acceptNode: function(node) {
+                            return node.textContent.trim()
+                                ? NodeFilter.FILTER_ACCEPT
+                                : NodeFilter.FILTER_REJECT;
+                        }
+                    });
+                    var node = walker.nextNode();
+                    return node ? node.parentElement : null;
+                }
+
+                function resetInsetTargets() {
+                    Array.from(document.querySelectorAll('[data-bibi-reading-inset="1"]'))
+                        .forEach(function(el) {
+                            el.style.boxSizing = '';
+                            el.style.height = '';
+                            el.style.minHeight = '';
+                            el.style.marginTop = '';
+                            el.style.marginBottom = '';
+                            el.style.paddingTop = '';
+                            el.style.paddingBottom = '';
+                            delete el.dataset.bibiReadingInset;
+                        });
+                }
+
+                function findReadingInsetTarget(textEl) {
+                    var target = null;
+                    var node = textEl;
+                    while (node && node !== body && node !== html) {
+                        if (isVerticalWriting(node))
+                            target = node;
+                        node = node.parentElement;
                     }
-                });
-                var node = walker.nextNode();
-                return node ? node.parentElement : null;
-            }
+                    return target;
+                }
 
-            var textEl = findTextElement();
-            var vertical = isVerticalWriting(html) ||
-                           isVerticalWriting(body) ||
-                           isVerticalWriting(textEl);
+                function applyBodyInset() {
+                    body.dataset.bibiReadingInset = '1';
+                    body.style.boxSizing = 'border-box';
+                    body.style.height = 'calc(100vh - 3em)';
+                    body.style.minHeight = '';
+                    body.style.paddingTop = '';
+                    body.style.paddingBottom = '';
+                    body.style.marginTop = '1em';
+                    body.style.marginBottom = '2em';
+                }
 
-            if (vertical && !isImageOnlyPage()) {
-                body.style.boxSizing = 'border-box';
-                body.style.paddingTop = '1em';
-                body.style.paddingBottom = '1em';
-                html.style.scrollPaddingTop = '1em';
-                html.style.scrollPaddingBottom = '1em';
-            } else {
-                body.style.paddingTop = '';
-                body.style.paddingBottom = '';
-                html.style.scrollPaddingTop = '';
-                html.style.scrollPaddingBottom = '';
-            }
+                function applyContentInsetTarget(el) {
+                    if (!el || el === body) return;
+                    el.dataset.bibiReadingInset = '1';
+                    el.style.boxSizing = 'border-box';
+                    el.style.height = '100%';
+                    el.style.minHeight = '';
+                    el.style.paddingTop = '';
+                    el.style.paddingBottom = '';
+                    el.style.marginTop = '';
+                    el.style.marginBottom = '';
+                }
+
+                resetInsetTargets();
+
+                var textEl = findTextElement();
+                var vertical = isVerticalWriting(html) ||
+                               isVerticalWriting(body) ||
+                               isVerticalWriting(textEl);
+
+                if (vertical && !isImageOnlyPage()) {
+                    // body で余白を作り、本文ラッパーは1つだけ body 内の高さへ合わせる。
+                    // 複数階層へ calc(100vh - 3em) を重ねると、EPUB によって折り返し位置が崩れる。
+                    // padding だけを足すと、100vh 前提のページで余白分の縦スクロールが出てしまう。
+                    applyBodyInset();
+                    applyContentInsetTarget(findReadingInsetTarget(textEl));
+                    html.style.scrollPaddingTop = '1em';
+                    html.style.scrollPaddingBottom = '2em';
+                } else {
+                    html.style.scrollPaddingTop = '';
+                    html.style.scrollPaddingBottom = '';
+                }
+            };
+            window._bibiApplyReadingInsets();
         })();
     )js");
 
@@ -618,6 +729,25 @@ void MainWindow::setupMenuBar() {
 
     fileMenu->addSeparator();
 
+    m_recentFilesMenu = fileMenu->addMenu(tr("最近開いたファイル"));
+    for (int i = 0; i < 10; ++i) {
+        QAction* act = m_recentFilesMenu->addAction(QString());
+        act->setVisible(false);
+        connect(act, &QAction::triggered, this, [this, act] {
+            openRecentFile(act->data().toString());
+        });
+        m_recentFileActs.append(act);
+    }
+    m_recentFilesMenu->addSeparator();
+    m_clearRecentFilesAct = m_recentFilesMenu->addAction(tr("履歴を消去"));
+    connect(m_clearRecentFilesAct, &QAction::triggered, this, [this] {
+        m_recentFiles.clear();
+        saveRecentFiles();
+        updateRecentFilesMenu();
+    });
+
+    fileMenu->addSeparator();
+
     auto* quitAct = fileMenu->addAction(tr("終了(&Q)"));
     quitAct->setShortcut(QKeySequence::Quit);
     connect(quitAct, &QAction::triggered, qApp, &QApplication::quit);
@@ -651,7 +781,7 @@ void MainWindow::setupMenuBar() {
     auto* toggleTocAct = viewMenu->addAction(tr("目次パネル(&T)"));
     toggleTocAct->setCheckable(true);
     toggleTocAct->setChecked(true);
-    connect(toggleTocAct, &QAction::toggled, m_tocTree, &QWidget::setVisible);
+    connect(toggleTocAct, &QAction::toggled, m_sideTabs, &QWidget::setVisible);
 
     // ── Bookmarks ─────────────────────────────────────────────────────────
     auto* bmMenu = menuBar()->addMenu(tr("しおり(&B)"));
@@ -700,6 +830,7 @@ void MainWindow::setupToolBar() {
 // ── EPUB Loading ──────────────────────────────────────────────────────────
 
 void MainWindow::openEpub(const QString& filePath) {
+    saveCurrentReadingPosition();
     m_prefetchFuture.waitForFinished();
     if (!m_reader->open(filePath)) {
         QMessageBox::critical(this, tr("エラー"),
@@ -707,6 +838,7 @@ void MainWindow::openEpub(const QString& filePath) {
             .arg(filePath, m_reader->lastError()));
         return;
     }
+    addRecentFile(QFileInfo(filePath).absoluteFilePath());
 
     m_urlScheme->setReader(m_reader);
     m_currentChapter = -1;
@@ -728,11 +860,20 @@ void MainWindow::openEpub(const QString& filePath) {
     m_tocTree->clear();
     populateToc(m_reader->toc());
     m_tocTree->expandAll();
+    refreshBookmarkList();
 
     updateWindowTitle();
     updateNavigationActions();
 
-    if (m_reader->chapterCount() > 0) goToChapter(0);
+    ReadingPosition pos;
+    if (m_reader->chapterCount() > 0 &&
+        m_bookmarkManager->readingPositionForEpub(m_reader->filePath(), &pos) &&
+        pos.chapterIndex >= 0 && pos.chapterIndex < m_reader->chapterCount()) {
+        jumpToReadingPosition(pos);
+        statusBar()->showMessage(tr("前回の位置から再開しました"), 1500);
+    } else if (m_reader->chapterCount() > 0) {
+        goToChapter(0);
+    }
 }
 
 void MainWindow::populateToc(const QList<NavPoint>& pts, QTreeWidgetItem* parent) {
@@ -749,6 +890,308 @@ void MainWindow::populateToc(const QList<NavPoint>& pts, QTreeWidgetItem* parent
 void MainWindow::onTocItemClicked(QTreeWidgetItem* item, int /*column*/) {
     QString src = item->data(0, Qt::UserRole).toString();
     if (!src.isEmpty()) goToHref(src);
+}
+
+void MainWindow::refreshBookmarkList() {
+    const bool sorting = m_bookmarkTree->isSortingEnabled();
+    m_bookmarkTree->setSortingEnabled(false);
+    m_bookmarkTree->clear();
+    if (!m_reader->isOpen()) {
+        m_bookmarkTree->setSortingEnabled(sorting);
+        return;
+    }
+
+    const QList<Bookmark> bms = m_bookmarkManager->bookmarksForEpub(m_reader->filePath());
+    for (const Bookmark& bm : bms) {
+        const QString chapter = chapterLabel(bm.chapterIndex);
+        const QString created = bm.createdAt.toString("yyyy/MM/dd HH:mm");
+        const int progress = qRound(bm.scrollPosition * 100.0);
+        auto* item = new BookmarkTreeItem(m_bookmarkTree);
+        item->setText(0, bm.label);
+        item->setText(1, chapter);
+        item->setText(2, QString("%1%").arg(progress));
+        item->setText(3, created);
+        item->setData(0, Qt::UserRole, bm.createdAt);
+        item->setData(2, Qt::UserRole, progress);
+        item->setData(3, Qt::UserRole, bm.createdAt);
+        item->setToolTip(0, bm.label);
+        item->setToolTip(1, chapter);
+        item->setToolTip(2, tr("位置: %1%").arg(progress));
+        item->setToolTip(3, created);
+    }
+    m_bookmarkTree->setSortingEnabled(sorting);
+}
+
+void MainWindow::onBookmarkActivated(QTreeWidgetItem* item, int /*column*/) {
+    if (!item) return;
+    const QDateTime createdAt = item->data(0, Qt::UserRole).toDateTime();
+    const QList<Bookmark> bms = m_bookmarkManager->bookmarksForEpub(m_reader->filePath());
+    for (const Bookmark& bm : bms) {
+        if (bm.createdAt == createdAt) {
+            jumpToBookmark(bm);
+            return;
+        }
+    }
+}
+
+void MainWindow::showBookmarkContextMenu(const QPoint& pos) {
+    auto* item = m_bookmarkTree->itemAt(pos);
+    if (!item || !m_reader->isOpen()) return;
+
+    const QDateTime createdAt = item->data(0, Qt::UserRole).toDateTime();
+    const QList<Bookmark> bms = m_bookmarkManager->bookmarksForEpub(m_reader->filePath());
+    Bookmark bm;
+    bool found = false;
+    for (const Bookmark& candidate : bms) {
+        if (candidate.createdAt == createdAt) {
+            bm = candidate;
+            found = true;
+            break;
+        }
+    }
+    if (!found) return;
+
+    QMenu menu(this);
+    QAction* jumpAct = menu.addAction(tr("移動"));
+    QAction* renameAct = menu.addAction(tr("名前変更..."));
+    QAction* deleteAct = menu.addAction(tr("削除"));
+    QAction* selected = menu.exec(m_bookmarkTree->viewport()->mapToGlobal(pos));
+
+    if (selected == jumpAct) {
+        jumpToBookmark(bm);
+    } else if (selected == renameAct) {
+        bool ok = false;
+        QString label = QInputDialog::getText(
+            this, tr("しおりの名前変更"), tr("しおりの名前:"),
+            QLineEdit::Normal, bm.label, &ok);
+        if (ok && m_bookmarkManager->renameBookmark(m_reader->filePath(), bm.createdAt, label))
+            refreshBookmarkList();
+    } else if (selected == deleteAct) {
+        const auto answer = QMessageBox::question(
+            this, tr("しおりを削除"),
+            tr("「%1」を削除しますか？").arg(bm.label),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (answer == QMessageBox::Yes &&
+            m_bookmarkManager->removeBookmark(m_reader->filePath(), bm.createdAt)) {
+            refreshBookmarkList();
+            statusBar()->showMessage(tr("しおりを削除しました"), 1500);
+        }
+    }
+}
+
+void MainWindow::showReaderContextMenu(QWebEngineView* view, const QPoint& pos) {
+    if (view != m_activeView || !m_reader->isOpen()) return;
+
+    QMenu menu(this);
+
+    QAction* copyAct = nullptr;
+    if (!view->page()->selectedText().isEmpty()) {
+        copyAct = menu.addAction(tr("コピー"));
+        menu.addSeparator();
+    }
+
+    QAction* bookmarkAct = menu.addAction(tr("しおりを追加"));
+    menu.addSeparator();
+
+    QAction* prevAct = menu.addAction(m_isRtl ? tr("前へ") : tr("前へ"));
+    QAction* nextAct = menu.addAction(m_isRtl ? tr("次へ") : tr("次へ"));
+    prevAct->setEnabled(m_isRtl ? m_rightAct->isEnabled() : m_leftAct->isEnabled());
+    nextAct->setEnabled(m_isRtl ? m_leftAct->isEnabled() : m_rightAct->isEnabled());
+
+    menu.addSeparator();
+    QAction* zoomInAct = menu.addAction(tr("拡大"));
+    QAction* zoomOutAct = menu.addAction(tr("縮小"));
+    QAction* resetZoomAct = menu.addAction(tr("標準サイズ"));
+
+    menu.addSeparator();
+    QAction* searchAct = menu.addAction(tr("検索"));
+
+    QAction* selected = menu.exec(view->mapToGlobal(pos));
+    if (!selected) return;
+
+    if (selected == copyAct) {
+        view->page()->triggerAction(QWebEnginePage::Copy);
+    } else if (selected == bookmarkAct) {
+        addBookmark();
+    } else if (selected == prevAct) {
+        prevChapter();
+    } else if (selected == nextAct) {
+        nextChapter();
+    } else if (selected == zoomInAct) {
+        m_zoomFactor = qMin(m_zoomFactor + 0.1, 4.0);
+        applyZoomToViews();
+        updateStatus();
+    } else if (selected == zoomOutAct) {
+        m_zoomFactor = qMax(m_zoomFactor - 0.1, 0.25);
+        applyZoomToViews();
+        updateStatus();
+    } else if (selected == resetZoomAct) {
+        m_zoomFactor = 1.0;
+        applyZoomToViews();
+        updateStatus();
+    } else if (selected == searchAct) {
+        showSearch();
+    }
+}
+
+void MainWindow::jumpToBookmark(const Bookmark& bm) {
+    goToChapter(bm.chapterIndex);
+
+    const double pos = bm.scrollPosition;
+    m_postSwapAction = [this, pos]() {
+        m_activePage->runJavaScript(QString(
+            "(function(){"
+            "  var el = document.documentElement;"
+            "  var canH = el.scrollWidth > el.clientWidth;"
+            "  if (canH) el.scrollLeft = %1 * Math.max(0, el.scrollWidth  - el.clientWidth);"
+            "  else      el.scrollTop  = %1 * Math.max(0, el.scrollHeight - el.clientHeight);"
+            "})()").arg(pos));
+    };
+}
+
+void MainWindow::jumpToReadingPosition(const ReadingPosition& pos) {
+    goToChapter(pos.chapterIndex);
+
+    const double scrollPosition = pos.scrollPosition;
+    m_postSwapAction = [this, scrollPosition]() {
+        m_activePage->runJavaScript(QString(
+            "(function(){"
+            "  var el = document.documentElement;"
+            "  var canH = el.scrollWidth > el.clientWidth;"
+            "  if (canH) el.scrollLeft = %1 * Math.max(0, el.scrollWidth  - el.clientWidth);"
+            "  else      el.scrollTop  = %1 * Math.max(0, el.scrollHeight - el.clientHeight);"
+            "})()").arg(scrollPosition));
+    };
+}
+
+void MainWindow::saveCurrentReadingPosition() {
+    if (!m_reader->isOpen() || m_currentChapter < 0 || !m_activePage) return;
+
+    auto finished = std::make_shared<bool>(false);
+    auto scrollPosition = std::make_shared<double>(0.0);
+    QEventLoop loop;
+    QPointer<QEventLoop> loopPtr(&loop);
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+
+    m_activePage->runJavaScript(
+        "(function(){"
+        "  var el = document.documentElement;"
+        "  var canH = el.scrollWidth > el.clientWidth;"
+        "  if (canH) return Math.abs(el.scrollLeft) / Math.max(1, el.scrollWidth  - el.clientWidth);"
+        "  return el.scrollTop / Math.max(1, el.scrollHeight - el.clientHeight);"
+        "})()",
+        [finished, scrollPosition, loopPtr](const QVariant& v) {
+            *scrollPosition = v.toDouble();
+            *finished = true;
+            if (loopPtr) loopPtr->quit();
+        });
+
+    timeout.start(500);
+    loop.exec();
+    if (!*finished) return;
+
+    ReadingPosition pos;
+    pos.epubPath       = m_reader->filePath();
+    pos.chapterIndex   = m_currentChapter;
+    pos.scrollPosition = *scrollPosition;
+    pos.updatedAt      = QDateTime::currentDateTime();
+    m_bookmarkManager->saveReadingPosition(pos);
+}
+
+QString MainWindow::chapterLabel(int chapterIndex) const {
+    if (m_reader->isOpen() && chapterIndex >= 0 && chapterIndex < m_reader->chapterCount()) {
+        const QString href = m_reader->chapter(chapterIndex).href;
+        QString title;
+
+        std::function<bool(const QList<NavPoint>&)> findTitle =
+            [&](const QList<NavPoint>& pts) -> bool {
+                for (const NavPoint& np : pts) {
+                    const QString path = np.src.section('#', 0, 0);
+                    if (path == href && !np.label.trimmed().isEmpty()) {
+                        title = np.label.trimmed();
+                        return true;
+                    }
+                    if (findTitle(np.children)) return true;
+                }
+                return false;
+            };
+
+        if (findTitle(m_reader->toc()))
+            return title;
+    }
+    return tr("Chapter %1").arg(chapterIndex + 1);
+}
+
+void MainWindow::loadRecentFiles() {
+    QSettings s;
+    m_recentFiles = s.value("recentFiles").toStringList();
+    m_recentFiles.removeDuplicates();
+    while (m_recentFiles.size() > 10)
+        m_recentFiles.removeLast();
+}
+
+void MainWindow::saveRecentFiles() const {
+    QSettings s;
+    s.setValue("recentFiles", m_recentFiles);
+}
+
+void MainWindow::addRecentFile(const QString& filePath) {
+    if (filePath.isEmpty()) return;
+
+    m_recentFiles.removeAll(filePath);
+    m_recentFiles.prepend(filePath);
+    while (m_recentFiles.size() > 10)
+        m_recentFiles.removeLast();
+    saveRecentFiles();
+    updateRecentFilesMenu();
+}
+
+void MainWindow::removeRecentFile(const QString& filePath) {
+    if (m_recentFiles.removeAll(filePath) > 0) {
+        saveRecentFiles();
+        updateRecentFilesMenu();
+    }
+}
+
+void MainWindow::updateRecentFilesMenu() {
+    if (!m_recentFilesMenu) return;
+
+    const int count = qMin(m_recentFiles.size(), m_recentFileActs.size());
+    for (int i = 0; i < m_recentFileActs.size(); ++i) {
+        QAction* act = m_recentFileActs[i];
+        if (i < count) {
+            const QString path = m_recentFiles[i];
+            const QString title = QFileInfo(path).fileName();
+            act->setText(tr("%1  %2").arg(i + 1).arg(title));
+            act->setToolTip(path);
+            act->setData(path);
+            act->setVisible(true);
+        } else {
+            act->setVisible(false);
+            act->setData({});
+        }
+    }
+
+    const bool hasRecent = !m_recentFiles.isEmpty();
+    m_recentFilesMenu->setEnabled(hasRecent);
+    if (m_clearRecentFilesAct)
+        m_clearRecentFilesAct->setEnabled(hasRecent);
+}
+
+void MainWindow::openRecentFile(const QString& filePath) {
+    if (filePath.isEmpty()) return;
+
+    if (!QFileInfo::exists(filePath)) {
+        QMessageBox::warning(this, tr("最近開いたファイル"),
+            tr("ファイルが見つかりません:\n%1\n\n履歴から削除します。").arg(filePath));
+        removeRecentFile(filePath);
+        return;
+    }
+
+    openEpub(filePath);
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────
@@ -826,13 +1269,6 @@ void MainWindow::onNavRight() {
 void MainWindow::addBookmark() {
     if (!m_reader->isOpen() || m_currentChapter < 0) return;
 
-    bool ok;
-    QString label = QInputDialog::getText(
-        this, tr("しおりを追加"),
-        tr("しおりの名前:"), QLineEdit::Normal,
-        tr("Chapter %1").arg(m_currentChapter + 1), &ok);
-    if (!ok || label.trimmed().isEmpty()) return;
-
     m_activePage->runJavaScript(
         "(function(){"
         "  var el = document.documentElement;"
@@ -840,14 +1276,20 @@ void MainWindow::addBookmark() {
         "  if (canH) return Math.abs(el.scrollLeft) / Math.max(1, el.scrollWidth  - el.clientWidth);"
         "  return el.scrollTop / Math.max(1, el.scrollHeight - el.clientHeight);"
         "})()",
-        [this, label](const QVariant& v) {
+        [this](const QVariant& v) {
+            const double pos = v.toDouble();
             Bookmark bm;
             bm.epubPath       = m_reader->filePath();
             bm.chapterIndex   = m_currentChapter;
-            bm.scrollPosition = v.toDouble();
-            bm.label          = label.trimmed();
+            bm.scrollPosition = pos;
+            bm.label          = tr("%1  %2%")
+                                    .arg(chapterLabel(m_currentChapter))
+                                    .arg(qRound(pos * 100.0));
             bm.createdAt      = QDateTime::currentDateTime();
             m_bookmarkManager->addBookmark(bm);
+            refreshBookmarkList();
+            m_sideTabs->setCurrentWidget(m_bookmarkTree);
+            statusBar()->showMessage(tr("しおりを追加しました"), 1500);
         });
 }
 
@@ -857,37 +1299,11 @@ void MainWindow::manageBookmarks() {
         return;
     }
 
-    QList<Bookmark> bms = m_bookmarkManager->bookmarksForEpub(m_reader->filePath());
-    if (bms.isEmpty()) {
+    refreshBookmarkList();
+    m_sideTabs->setVisible(true);
+    m_sideTabs->setCurrentWidget(m_bookmarkTree);
+    if (m_bookmarkTree->topLevelItemCount() == 0)
         QMessageBox::information(this, tr("しおり"), tr("しおりがありません。"));
-        return;
-    }
-
-    QStringList labels;
-    for (const auto& bm : bms)
-        labels << QString("%1  (チャプター %2)").arg(bm.label).arg(bm.chapterIndex + 1);
-
-    bool ok;
-    QString sel = QInputDialog::getItem(
-        this, tr("しおり一覧"), tr("移動するしおりを選択:"), labels, 0, false, &ok);
-    if (!ok) return;
-
-    int idx = labels.indexOf(sel);
-    if (idx < 0 || idx >= bms.size()) return;
-
-    const Bookmark& bm = bms[idx];
-    goToChapter(bm.chapterIndex);
-
-    double pos = bm.scrollPosition;
-    m_postSwapAction = [this, pos]() {
-        m_activePage->runJavaScript(QString(
-            "(function(){"
-            "  var el = document.documentElement;"
-            "  var canH = el.scrollWidth > el.clientWidth;"
-            "  if (canH) el.scrollLeft = %1 * Math.max(0, el.scrollWidth  - el.clientWidth);"
-            "  else      el.scrollTop  = %1 * Math.max(0, el.scrollHeight - el.clientHeight);"
-            "})()").arg(pos));
-    };
 }
 
 // ── Search ────────────────────────────────────────────────────────────────
@@ -1029,6 +1445,7 @@ void MainWindow::applyZoomToViews() {
                     body.style.zoom = zoom;
                 }
             }
+            if (window._bibiApplyReadingInsets) window._bibiApplyReadingInsets();
         })();
     )js").arg(m_zoomFactor);
 

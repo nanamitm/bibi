@@ -2,16 +2,20 @@
 #include <QMainWindow>
 #include <QFuture>
 #include <QTimer>
+#include <QStringList>
 #include <functional>
 #include "epubreader.h"
 #include "bookmarkmanager.h"
 #include "epubwebpage.h"
 
 class QWebEngineView;
+class QTabWidget;
 class QTreeWidget;
 class QTreeWidgetItem;
 class QSplitter;
 class QLabel;
+class QAction;
+class QMenu;
 class EpubUrlScheme;
 
 class MainWindow : public QMainWindow {
@@ -50,6 +54,21 @@ private:
 
     void populateToc(const QList<NavPoint>& pts, QTreeWidgetItem* parent = nullptr);
     void onTocItemClicked(QTreeWidgetItem* item, int column);
+    void refreshBookmarkList();
+    void onBookmarkActivated(QTreeWidgetItem* item, int column);
+    void showBookmarkContextMenu(const QPoint& pos);
+    void showReaderContextMenu(QWebEngineView* view, const QPoint& pos);
+    void jumpToBookmark(const Bookmark& bm);
+    void jumpToReadingPosition(const ReadingPosition& pos);
+    void saveCurrentReadingPosition();
+    QString chapterLabel(int chapterIndex) const;
+
+    void loadRecentFiles();
+    void saveRecentFiles() const;
+    void addRecentFile(const QString& filePath);
+    void removeRecentFile(const QString& filePath);
+    void updateRecentFilesMenu();
+    void openRecentFile(const QString& filePath);
 
     void updateNavigationActions();
     void updateWindowTitle();
@@ -76,12 +95,18 @@ private:
     EpubWebPage*     m_standbyPage    = nullptr;
 
     QTreeWidget*     m_tocTree;
+    QTabWidget*      m_sideTabs;
+    QTreeWidget*     m_bookmarkTree;
     QSplitter*       m_splitter;
     QLabel*          m_statusLabel;
 
     QAction* m_leftAct;
     QAction* m_rightAct;
     QAction* m_bookmarkAct;
+    QMenu*   m_recentFilesMenu = nullptr;
+    QAction* m_clearRecentFilesAct = nullptr;
+    QList<QAction*> m_recentFileActs;
+    QStringList m_recentFiles;
 
     int    m_currentChapter  = -1;
     bool   m_isRtl           = false;

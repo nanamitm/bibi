@@ -12,6 +12,7 @@ signals:
     void navLeft();
     void navRight();
     void pageReady();   // img.decode 完了後に JS から通知される
+    void readingPositionChanged(double position);
 
 protected:
     void javaScriptConsoleMessage(JavaScriptConsoleMessageLevel level,
@@ -21,6 +22,12 @@ protected:
         if (msg == "epub-nav:left")   { emit navLeft();   return; }
         if (msg == "epub-nav:right")  { emit navRight();  return; }
         if (msg == "epub-page-ready") { emit pageReady(); return; }
+        if (msg.startsWith("epub-position:")) {
+            bool ok = false;
+            double pos = msg.mid(QStringLiteral("epub-position:").size()).toDouble(&ok);
+            if (ok) emit readingPositionChanged(pos);
+            return;
+        }
         QWebEnginePage::javaScriptConsoleMessage(level, msg, line, src);
     }
 };

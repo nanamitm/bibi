@@ -12,13 +12,6 @@ void EpubUrlScheme::setReader(EpubReader* reader) {
     m_reader = reader;
 }
 
-static void replyEmpty(QWebEngineUrlRequestJob* request) {
-    auto* buf = new QBuffer;
-    buf->open(QIODevice::ReadOnly);
-    QObject::connect(request, &QObject::destroyed, buf, &QObject::deleteLater);
-    request->reply("text/plain", buf);
-}
-
 void EpubUrlScheme::requestStarted(QWebEngineUrlRequestJob* request) {
     QString path = request->requestUrl().path();
     if (path.startsWith('/')) path = path.mid(1);

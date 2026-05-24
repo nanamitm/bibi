@@ -5,6 +5,7 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QUuid>
 
 BookmarkManager::BookmarkManager(QObject* parent) : QObject(parent) {
     load();
@@ -24,21 +25,18 @@ QString BookmarkManager::readingPositionsPath() const {
 }
 
 void BookmarkManager::addBookmark(const Bookmark& bm) {
-    m_bookmarks.append(bm);
+    Bookmark normalized = bm;
+    if (normalized.id.isEmpty())
+        normalized.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    m_bookmarks.append(normalized);
     save();
 }
 
-void BookmarkManager::removeBookmark(int globalIndex) {
-    if (globalIndex >= 0 && globalIndex < m_bookmarks.size()) {
-        m_bookmarks.removeAt(globalIndex);
-        save();
-    }
-}
+bool BookmarkManager::removeBookmark(const QString& id) {
+    if (id.isEmpty()) return false;
 
-bool BookmarkManager::removeBookmark(const QString& epubPath, const QDateTime& createdAt) {
     for (int i = 0; i < m_bookmarks.size(); ++i) {
-        const Bookmark& bm = m_bookmarks[i];
-        if (bm.epubPath == epubPath && bm.createdAt == createdAt) {
+        if (m_bookmarks[i].id == id) {
             m_bookmarks.removeAt(i);
             save();
             return true;
@@ -47,13 +45,14 @@ bool BookmarkManager::removeBookmark(const QString& epubPath, const QDateTime& c
     return false;
 }
 
-bool BookmarkManager::renameBookmark(const QString& epubPath, const QDateTime& createdAt,
-                                     const QString& label) {
+bool BookmarkManager::renameBookmark(const QString& id, const QString& label) {
+    if (id.isEmpty()) return false;
+
     const QString trimmed = label.trimmed();
     if (trimmed.isEmpty()) return false;
 
     for (Bookmark& bm : m_bookmarks) {
-        if (bm.epubPath == epubPath && bm.createdAt == createdAt) {
+        if (bm.id == id) {
             bm.label = trimmed;
             save();
             return true;
@@ -101,21 +100,11 @@ bool BookmarkManager::readingPositionForEpub(const QString& epubPath,
     return false;
 }
 
-bool BookmarkManager::clearReadingPosition(const QString& epubPath) {
-    for (int i = 0; i < m_readingPositions.size(); ++i) {
-        if (m_readingPositions[i].epubPath == epubPath) {
-            m_readingPositions.removeAt(i);
-            saveReadingPositions();
-            return true;
-        }
-    }
-    return false;
-}
-
 void BookmarkManager::save() {
     QJsonArray arr;
     for (const auto& bm : m_bookmarks) {
         QJsonObject obj;
+        obj["id"]             = bm.id;
         obj["epubPath"]       = bm.epubPath;
         obj["chapterIndex"]   = bm.chapterIndex;
         obj["scrollPosition"] = bm.scrollPosition;
@@ -150,16 +139,24 @@ void BookmarkManager::load() {
     if (!doc.isArray()) return;
 
     m_bookmarks.clear();
+    bool needsSave = false;
     for (const QJsonValue& v : doc.array()) {
         QJsonObject obj = v.toObject();
         Bookmark bm;
+        bm.id             = obj["id"].toString();
         bm.epubPath       = obj["epubPath"].toString();
         bm.chapterIndex   = obj["chapterIndex"].toInt();
         bm.scrollPosition = obj["scrollPosition"].toDouble();
         bm.label          = obj["label"].toString();
         bm.createdAt      = QDateTime::fromString(obj["createdAt"].toString(), Qt::ISODate);
+        if (bm.id.isEmpty()) {
+            bm.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            needsSave = true;
+        }
         m_bookmarks.append(bm);
     }
+    if (needsSave)
+        save();
 }
 
 void BookmarkManager::loadReadingPositions() {

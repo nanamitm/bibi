@@ -2,11 +2,11 @@
 #include <QMainWindow>
 #include <QFuture>
 #include <QTimer>
-#include <QStringList>
 #include <functional>
 #include "epubreader.h"
 #include "bookmarkmanager.h"
 #include "epubwebpage.h"
+#include "recentfiles.h"
 
 class QWebEngineView;
 class QTabWidget;
@@ -14,6 +14,7 @@ class QTreeWidget;
 class QTreeWidgetItem;
 class QSplitter;
 class QLabel;
+class QProgressBar;
 class QAction;
 class QMenu;
 class EpubUrlScheme;
@@ -42,6 +43,13 @@ private:
 
     void goToChapter(int index);
     void goToHref(const QString& href);
+    void loadStandbyChapter(int index, bool scrollToEnd, bool forNavigation);
+    void preloadNextChapter();
+    int nextReadingChapterIndex() const;
+    void clearStandbyChapter();
+    bool standbyChapterMatches(int index, bool scrollToEnd) const;
+    void goToCover();
+    void goToBookEnd();
     void nextChapter(bool scrollToEnd = false);
     void prevChapter(bool scrollToEnd = false);
     void onLeftKey();
@@ -63,17 +71,11 @@ private:
     void saveCurrentReadingPosition();
     QString chapterLabel(int chapterIndex) const;
 
-    void loadRecentFiles();
-    void saveRecentFiles() const;
-    void addRecentFile(const QString& filePath);
-    void removeRecentFile(const QString& filePath);
-    void updateRecentFilesMenu();
-    void openRecentFile(const QString& filePath);
-
     void updateNavigationActions();
     void updateWindowTitle();
     void updateStatus();
 
+    void setZoomFactor(double zoomFactor, bool saveSetting = true);
     void applyCtrlWheelZoom(int delta);
     void applyZoomToViews();
 
@@ -82,6 +84,13 @@ private:
     EpubReader*      m_reader;
     BookmarkManager* m_bookmarkManager;
     EpubUrlScheme*   m_urlScheme;
+
+    struct BufferedChapter {
+        int chapterIndex = -1;
+        bool ready = false;
+        bool forNavigation = false;
+        bool scrollToEnd = false;
+    };
 
     // ダブルバッファ: m_activeView が表示中、m_standbyView がバックグラウンド読み込み
     QWidget*         m_viewContainer  = nullptr;
@@ -99,19 +108,21 @@ private:
     QTreeWidget*     m_bookmarkTree;
     QSplitter*       m_splitter;
     QLabel*          m_statusLabel;
+    QProgressBar*    m_progressBar;
 
     QAction* m_leftAct;
     QAction* m_rightAct;
+    QAction* m_coverAct;
+    QAction* m_endAct;
     QAction* m_bookmarkAct;
-    QMenu*   m_recentFilesMenu = nullptr;
-    QAction* m_clearRecentFilesAct = nullptr;
-    QList<QAction*> m_recentFileActs;
-    QStringList m_recentFiles;
+    RecentFiles* m_recentFiles = nullptr;
 
     int    m_currentChapter  = -1;
     bool   m_isRtl           = false;
     double m_zoomFactor      = 1.0;
+    double m_currentScrollPosition = 0.0;
     bool m_scrollToEnd     = false;
+    BufferedChapter m_standbyChapter;
     QFuture<void> m_prefetchFuture;
 
     QTimer* m_swapCheckTimer = nullptr;

@@ -5,6 +5,7 @@
 #include <QDateTime>
 
 struct Bookmark {
+    QString   id;
     QString   epubPath;
     int       chapterIndex   = 0;
     double    scrollPosition = 0.0; // 0.0–1.0
@@ -25,15 +26,12 @@ public:
     explicit BookmarkManager(QObject* parent = nullptr);
 
     void addBookmark(const Bookmark& bm);
-    void removeBookmark(int globalIndex);
-    bool removeBookmark(const QString& epubPath, const QDateTime& createdAt);
-    bool renameBookmark(const QString& epubPath, const QDateTime& createdAt,
-                        const QString& label);
+    bool removeBookmark(const QString& id);
+    bool renameBookmark(const QString& id, const QString& label);
     QList<Bookmark> bookmarksForEpub(const QString& epubPath) const;
 
     void saveReadingPosition(const ReadingPosition& pos);
     bool readingPositionForEpub(const QString& epubPath, ReadingPosition* pos) const;
-    bool clearReadingPosition(const QString& epubPath);
 
     void load();
     void save();

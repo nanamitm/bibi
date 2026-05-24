@@ -27,6 +27,7 @@ set(SOURCES
     src/epuburlscheme.cpp
     src/epubwebpage.cpp
     src/bookmarkmanager.cpp
+    src/recentfiles.cpp
     src/searchdialog.cpp
 )
 

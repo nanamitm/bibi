@@ -1,6 +1,5 @@
 #include "mainwindow.h"
 #include "epuburlscheme.h"
-#include "searchdialog.h"
 #include <QtConcurrent/QtConcurrent>
 #include <QEvent>
 #include <QResizeEvent>
@@ -9,18 +8,26 @@
 #include <QWebEnginePage>
 #include <QTabWidget>
 #include <QTreeWidget>
+#include <QTreeView>
+#include <QFileSystemModel>
+#include <QAbstractItemView>
+#include <QItemSelectionModel>
 #include <QHeaderView>
 #include <QSplitter>
 #include <QLabel>
 #include <QProgressBar>
+#include <QPushButton>
+#include <QVBoxLayout>
 #include <QMenuBar>
 #include <QMenu>
 #include <QAction>
 #include <QToolBar>
 #include <QStatusBar>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QMessageBox>
 #include <QInputDialog>
+#include <QDir>
 #include <QLineEdit>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -42,6 +49,7 @@
 namespace {
 constexpr const char* kZoomFactorSettingKey = "view/zoomFactor";
 constexpr const char* kPreloadModeSettingKey = "view/preloadMode";
+constexpr const char* kFolderRootSettingKey = "library/rootFolder";
 
 class BookmarkTreeItem : public QTreeWidgetItem {
 public:
@@ -129,8 +137,47 @@ void MainWindow::setupUi() {
     m_bookmarkTree->setColumnWidth(2, 52);
     m_bookmarkTree->setColumnWidth(3, 118);
 
+    m_searchResultTree = new QTreeWidget(m_sideTabs);
+    m_searchResultTree->setHeaderLabels({tr("章"), tr("候補"), tr("本文")});
+    m_searchResultTree->setRootIsDecorated(false);
+    m_searchResultTree->setAlternatingRowColors(true);
+    m_searchResultTree->setTextElideMode(Qt::ElideRight);
+    m_searchResultTree->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_searchResultTree->header()->setStretchLastSection(false);
+    m_searchResultTree->header()->setSectionResizeMode(0, QHeaderView::Interactive);
+    m_searchResultTree->header()->setSectionResizeMode(1, QHeaderView::Fixed);
+    m_searchResultTree->header()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_searchResultTree->setColumnWidth(0, 110);
+    m_searchResultTree->setColumnWidth(1, 52);
+
+    m_folderTab = new QWidget(m_sideTabs);
+    auto* folderLayout = new QVBoxLayout(m_folderTab);
+    folderLayout->setContentsMargins(4, 4, 4, 4);
+    folderLayout->setSpacing(4);
+
+    auto* chooseFolderButton = new QPushButton(tr("フォルダーを選択…"), m_folderTab);
+    folderLayout->addWidget(chooseFolderButton);
+
+    m_folderModel = new QFileSystemModel(this);
+    m_folderModel->setFilter(QDir::AllDirs | QDir::Files | QDir::NoDotAndDotDot);
+    m_folderModel->setNameFilters({QStringLiteral("*.epub"), QStringLiteral("*.zip")});
+    m_folderModel->setNameFilterDisables(false);
+
+    m_folderTree = new QTreeView(m_folderTab);
+    m_folderTree->setModel(m_folderModel);
+    m_folderTree->setHeaderHidden(true);
+    m_folderTree->setAnimated(true);
+    m_folderTree->setSortingEnabled(true);
+    m_folderTree->sortByColumn(0, Qt::AscendingOrder);
+    m_folderTree->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    for (int column = 1; column < m_folderModel->columnCount(); ++column)
+        m_folderTree->hideColumn(column);
+    folderLayout->addWidget(m_folderTree, 1);
+
     m_sideTabs->addTab(m_tocTree, tr("目次"));
     m_sideTabs->addTab(m_bookmarkTree, tr("しおり"));
+    m_sideTabs->addTab(m_searchResultTree, tr("検索結果"));
+    m_sideTabs->addTab(m_folderTab, tr("フォルダー"));
 
     auto* profile = new QWebEngineProfile("BibiQtReader", this);
     profile->installUrlSchemeHandler("epub", m_urlScheme);
@@ -206,9 +253,15 @@ void MainWindow::setupUi() {
                 if (loadedPath != expectedPath) return;
 
                 applyZoomToViews();
-                pg->runJavaScript(
-                    "if (window._bibiAlignImageOnlyInitialRight) "
-                    "window._bibiAlignImageOnlyInitialRight();");
+                if (buffer->chapter.alignImageOnlyInitialRight) {
+                    pg->runJavaScript(
+                        "if (window._bibiAlignImageOnlyInitialRight) "
+                        "window._bibiAlignImageOnlyInitialRight();");
+                } else if (buffer->chapter.alignImageOnlyInitialLeft) {
+                    pg->runJavaScript(
+                        "if (window._bibiAlignImageOnlyInitialLeft) "
+                        "window._bibiAlignImageOnlyInitialLeft();");
+                }
                 buffer->chapter.ready = true;
                 if (buffer->chapter.forNavigation) {
                     m_swapBuffer = buffer;
@@ -264,6 +317,19 @@ void MainWindow::setupUi() {
             this,           &MainWindow::onBookmarkActivated);
     connect(m_bookmarkTree, &QTreeWidget::customContextMenuRequested,
             this,           &MainWindow::showBookmarkContextMenu);
+    connect(m_searchResultTree, &QTreeWidget::itemActivated,
+            this, &MainWindow::onSearchResultActivated);
+    connect(m_searchResultTree, &QTreeWidget::itemClicked,
+            this, &MainWindow::onSearchResultActivated);
+    connect(chooseFolderButton, &QPushButton::clicked,
+            this, &MainWindow::chooseFolderRoot);
+    connect(m_folderTree, &QTreeView::activated,
+            this, &MainWindow::onFolderFileActivated);
+
+    QSettings settings;
+    m_folderRootConfigured = settings.contains(kFolderRootSettingKey);
+    const QString folderRoot = settings.value(kFolderRootSettingKey, QDir::homePath()).toString();
+    setFolderRoot(QDir(folderRoot).exists() ? folderRoot : QDir::homePath(), false);
 
     m_swapCheckTimer = new QTimer(this);
     m_swapCheckTimer->setInterval(16); // ~1フレーム間隔でポーリング
@@ -487,6 +553,8 @@ void MainWindow::handleLoadFinished(QWebEngineView* view, bool ok) {
     // ① 全画像デコード完了後にスクロール位置を確定し、epub-page-ready を通知する
     const int isRtl       = m_isRtl      ? 1 : 0;
     const int scrollToEnd = scrollToEndForView(view) ? 1 : 0;
+    const int alignImageOnlyInitialRight = alignImageOnlyInitialRightForView(view) ? 1 : 0;
+    const int alignImageOnlyInitialLeft = alignImageOnlyInitialLeftForView(view) ? 1 : 0;
     m_scrollToEnd = false;
     view->page()->runJavaScript(QString(
         "(function(){"
@@ -512,24 +580,39 @@ void MainWindow::handleLoadFinished(QWebEngineView* view, bool ok) {
         "      return el.querySelector && el.querySelector('img, svg, object, picture, svg image');"
         "    });"
         "  }"
-        "  function scrollToVisualRight(el) {"
-        "    el.scrollLeft = Math.max(0, el.scrollWidth - el.clientWidth);"
+        "  function scrollToImageOnlyEdge(el, edge) {"
+        "    var maxH = Math.max(0, el.scrollWidth - el.clientWidth);"
+        "    if (edge === 'left') {"
+        "      el.scrollLeft = %1 ? -maxH : 0;"
+        "    } else {"
+        "      el.scrollLeft = %1 ? 0 : maxH;"
+        "    }"
         "  }"
+        "  window._bibiAlignImageOnlyInitialRightEnabled = !!%3;"
+        "  window._bibiAlignImageOnlyInitialLeftEnabled = !!%4;"
         "  window._bibiAlignImageOnlyInitialRight = function() {"
         "    var el = document.scrollingElement || document.documentElement;"
-        "    if (isImageOnlyPage() && el.scrollWidth > el.clientWidth)"
-        "      scrollToVisualRight(el);"
+        "    if (window._bibiAlignImageOnlyInitialRightEnabled && isImageOnlyPage() && el.scrollWidth > el.clientWidth)"
+        "      scrollToImageOnlyEdge(el, 'right');"
+        "  };"
+        "  window._bibiAlignImageOnlyInitialLeft = function() {"
+        "    var el = document.scrollingElement || document.documentElement;"
+        "    if (window._bibiAlignImageOnlyInitialLeftEnabled && isImageOnlyPage() && el.scrollWidth > el.clientWidth)"
+        "      scrollToImageOnlyEdge(el, 'left');"
         "  };"
         "  Promise.all(ps).then(function(){"
         "    requestAnimationFrame(function(){"
         "      var el = document.documentElement;"
-        "      if (%2) {"
+        "      var imageOnly = isImageOnlyPage();"
+        "      if (%2 && !(imageOnly && (window._bibiAlignImageOnlyInitialRightEnabled || window._bibiAlignImageOnlyInitialLeftEnabled))) {"
         "        if (el.scrollWidth > el.clientWidth)"
         "          window.scrollBy(%1 ? -999999 : 999999, 0);"
         "        else if (el.scrollHeight > el.clientHeight)"
         "          window.scrollBy(0, 999999);"
-        "      } else {"
+        "      } else if (%3) {"
         "        window._bibiAlignImageOnlyInitialRight();"
+        "      } else if (%4) {"
+        "        window._bibiAlignImageOnlyInitialLeft();"
         "      }"
         "      if (window._bibiReportReadingPosition) window._bibiReportReadingPosition();"
         "      requestAnimationFrame(function(){"
@@ -537,7 +620,7 @@ void MainWindow::handleLoadFinished(QWebEngineView* view, bool ok) {
         "      });"
         "    });"
         "  });"
-        "})();").arg(isRtl).arg(scrollToEnd));
+        "})();").arg(isRtl).arg(scrollToEnd).arg(alignImageOnlyInitialRight).arg(alignImageOnlyInitialLeft));
 
     // ② ホイール → オーバーフロー方向スクロール
         const int sign = m_isRtl ? -1 : 1;
@@ -568,8 +651,8 @@ void MainWindow::handleLoadFinished(QWebEngineView* view, bool ok) {
                         var maxH = Math.max(0, el.scrollWidth  - el.clientWidth);
                         var maxV = Math.max(0, el.scrollHeight - el.clientHeight);
                         var absSl = Math.abs(el.scrollLeft);
-                        var atLeft = absSl <= 2;
-                        var atRight = absSl >= maxH - 2;
+                        var atLeft = isRtl ? absSl >= maxH - 2 : absSl <= 2;
+                        var atRight = isRtl ? absSl <= 2 : absSl >= maxH - 2;
                         var atTop = el.scrollTop <= 2;
                         var atBottom = el.scrollTop >= maxV - 2;
                         var dx = canH ? (e.deltaX || (!canV ? SIGN * e.deltaY : 0)) : 0;
@@ -720,8 +803,8 @@ void MainWindow::handleLoadFinished(QWebEngineView* view, bool ok) {
 
                     if ((canH || canV) && isZoomPanPage()) {
                         var absSl = Math.abs(el.scrollLeft);
-                        var atLeft = absSl <= 2;
-                        var atRight = absSl >= maxH - 2;
+                        var atLeft = isRtl ? absSl >= maxH - 2 : absSl <= 2;
+                        var atRight = isRtl ? absSl <= 2 : absSl >= maxH - 2;
                         var atTop = el.scrollTop <= 2;
                         var atBot = el.scrollTop >= maxV - 2;
                         if (left) {
@@ -1030,6 +1113,14 @@ void MainWindow::setupMenuBar() {
     auto* manageBmAct = bmMenu->addAction(tr("しおり一覧(&M)…"));
     connect(manageBmAct, &QAction::triggered, this, &MainWindow::manageBookmarks);
 
+    bmMenu->addSeparator();
+
+    auto* exportBackupAct = bmMenu->addAction(tr("バックアップを書き出し(&E)…"));
+    connect(exportBackupAct, &QAction::triggered, this, &MainWindow::exportBookmarkBackup);
+
+    auto* importBackupAct = bmMenu->addAction(tr("バックアップを読み込み(&I)…"));
+    connect(importBackupAct, &QAction::triggered, this, &MainWindow::importBookmarkBackup);
+
     // ── Search ────────────────────────────────────────────────────────────
     auto* searchMenu = menuBar()->addMenu(tr("検索(&S)"));
 
@@ -1070,10 +1161,6 @@ void MainWindow::setupToolBar() {
     m_bookmarkAct->setEnabled(false);
     connect(m_bookmarkAct, &QAction::triggered, this, &MainWindow::addBookmark);
 
-    tb->addSeparator();
-
-    auto* searchTbAct = tb->addAction(tr("検索"));
-    connect(searchTbAct, &QAction::triggered, this, &MainWindow::showSearch);
 }
 
 void MainWindow::setupSearchBar() {
@@ -1108,7 +1195,8 @@ void MainWindow::setupSearchBar() {
         m_searchResults.clear();
         m_searchIndex = -1;
         m_searchQuery.clear();
-        m_searchCountLabel->setText(tr("0 / 0"));
+        refreshSearchResultList();
+        updateSearchCountLabel();
         m_searchPrevAct->setEnabled(false);
         m_searchNextAct->setEnabled(false);
         m_searchListAct->setEnabled(false);
@@ -1143,6 +1231,11 @@ void MainWindow::openEpub(const QString& filePath) {
         return;
     }
     m_recentFiles->addFile(filePath);
+    if (!m_folderRootConfigured)
+        setFolderRoot(QFileInfo(filePath).absolutePath());
+    QTimer::singleShot(0, this, [this, filePath] {
+        selectFolderFile(filePath);
+    });
 
     m_urlScheme->setReader(m_reader);
     m_currentChapter = -1;
@@ -1196,6 +1289,60 @@ void MainWindow::populateToc(const QList<NavPoint>& pts, QTreeWidgetItem* parent
 void MainWindow::onTocItemClicked(QTreeWidgetItem* item, int /*column*/) {
     QString src = item->data(0, Qt::UserRole).toString();
     if (!src.isEmpty()) goToHref(src);
+}
+
+void MainWindow::chooseFolderRoot() {
+    const QString currentRoot = m_folderModel ? m_folderModel->rootPath() : QDir::homePath();
+    const QString folder = QFileDialog::getExistingDirectory(
+        this,
+        tr("フォルダーを選択"),
+        currentRoot.isEmpty() ? QDir::homePath() : currentRoot);
+    if (folder.isEmpty()) return;
+    setFolderRoot(folder);
+    m_sideTabs->setCurrentWidget(m_folderTab);
+}
+
+void MainWindow::onFolderFileActivated(const QModelIndex& index) {
+    if (!m_folderModel || !index.isValid()) return;
+
+    const QFileInfo info = m_folderModel->fileInfo(index);
+    if (info.isDir()) {
+        m_folderTree->setExpanded(index, !m_folderTree->isExpanded(index));
+        return;
+    }
+
+    const QString suffix = info.suffix().toLower();
+    if (suffix == QStringLiteral("epub") || suffix == QStringLiteral("zip"))
+        openEpub(info.absoluteFilePath());
+}
+
+void MainWindow::setFolderRoot(const QString& path, bool saveSetting) {
+    if (!m_folderModel || !m_folderTree) return;
+
+    const QString rootPath = QDir(path).exists() ? QDir(path).absolutePath() : QDir::homePath();
+    const QModelIndex rootIndex = m_folderModel->setRootPath(rootPath);
+    m_folderTree->setRootIndex(rootIndex);
+    if (saveSetting) {
+        QSettings s;
+        s.setValue(kFolderRootSettingKey, rootPath);
+        m_folderRootConfigured = true;
+    }
+}
+
+void MainWindow::selectFolderFile(const QString& filePath) {
+    if (!m_folderModel || !m_folderTree) return;
+
+    const QFileInfo info(filePath);
+    if (!info.exists()) return;
+
+    const QModelIndex index = m_folderModel->index(info.absoluteFilePath());
+    if (!index.isValid()) return;
+
+    m_folderTree->scrollTo(index, QAbstractItemView::PositionAtCenter);
+    m_folderTree->selectionModel()->select(
+        index,
+        QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    m_folderTree->setCurrentIndex(index);
 }
 
 void MainWindow::refreshBookmarkList() {
@@ -1284,6 +1431,54 @@ void MainWindow::showBookmarkContextMenu(const QPoint& pos) {
             statusBar()->showMessage(tr("しおりを削除しました"), 1500);
         }
     }
+}
+
+void MainWindow::refreshSearchResultList() {
+    if (!m_searchResultTree) return;
+
+    m_searchResultTree->clear();
+    for (int i = 0; i < m_searchResults.size(); ++i) {
+        const auto& result = m_searchResults[i];
+        auto* item = new QTreeWidgetItem(m_searchResultTree);
+        item->setText(0, result.chapterTitle);
+        item->setText(1, QString::number(result.occurrenceIndex + 1));
+        item->setText(2, result.context);
+        item->setToolTip(0, result.chapterTitle);
+        item->setToolTip(2, result.context);
+        item->setData(0, Qt::UserRole, i);
+    }
+
+    selectSearchResultItem(m_searchIndex);
+}
+
+void MainWindow::selectSearchResultItem(int resultIndex) {
+    if (!m_searchResultTree) return;
+    if (resultIndex < 0 || resultIndex >= m_searchResultTree->topLevelItemCount()) return;
+
+    auto* current = m_searchResultTree->topLevelItem(resultIndex);
+    m_searchResultTree->setCurrentItem(current);
+    m_searchResultTree->scrollToItem(current, QAbstractItemView::PositionAtCenter);
+}
+
+void MainWindow::updateSearchCountLabel() {
+    if (!m_searchCountLabel) return;
+    if (m_searchResults.isEmpty()) {
+        m_searchCountLabel->setText(m_searchQuery.isEmpty() ? tr("0 / 0") : tr("見つかりません"));
+        return;
+    }
+    m_searchCountLabel->setText(tr("%1 / %2").arg(m_searchIndex + 1).arg(m_searchResults.size()));
+}
+
+void MainWindow::onSearchResultActivated(QTreeWidgetItem* item, int /*column*/) {
+    if (!item) return;
+    const int resultIndex = item->data(0, Qt::UserRole).toInt();
+    if (resultIndex < 0 || resultIndex >= m_searchResults.size()) return;
+
+    m_searchIndex = resultIndex;
+    const auto& result = m_searchResults[m_searchIndex];
+    updateSearchCountLabel();
+    selectSearchResultItem(m_searchIndex);
+    jumpToSearchResult(result.chapterIndex, m_searchQuery, result.occurrenceIndex);
 }
 
 void MainWindow::showReaderContextMenu(QWebEngineView* view, const QPoint& pos) {
@@ -1406,8 +1601,9 @@ void MainWindow::jumpToSearchResult(int chapterIndex, const QString& query, int 
         chapterIndex == m_highlightedSearchChapter &&
         query == m_highlightedSearchQuery;
     const bool shouldScrollToMatch = !sameHighlightedChapter;
+    const bool restoreSearchFocus = m_searchBar && m_searchBar->isVisible() && m_searchEdit;
 
-    auto applyHighlight = [this, needleExpression, occurrenceIndex, shouldScrollToMatch]() {
+    auto applyHighlight = [this, needleExpression, occurrenceIndex, shouldScrollToMatch, restoreSearchFocus]() {
         m_activePage->runJavaScript(QString(R"js(
             (function() {
                 var needle = %1;
@@ -1560,6 +1756,13 @@ void MainWindow::jumpToSearchResult(int chapterIndex, const QString& query, int 
                 return true;
             })();
         )js").arg(needleExpression).arg(occurrenceIndex).arg(shouldScrollToMatch ? QStringLiteral("true") : QStringLiteral("false")));
+
+        if (restoreSearchFocus) {
+            QTimer::singleShot(0, this, [this] {
+                if (m_searchBar && m_searchBar->isVisible() && m_searchEdit)
+                    m_searchEdit->setFocus(Qt::OtherFocusReason);
+            });
+        }
     };
 
     m_highlightedSearchQuery = query;
@@ -1642,7 +1845,8 @@ void MainWindow::goToChapter(int index) {
             scheduleSwap();
     } else {
         invalidatePreloads();
-        loadBufferedChapter(m_nextBuffer, index, scrollToEnd, true);
+        const bool movingPrevious = fromChapter >= 0 && index == fromChapter - 1;
+        loadBufferedChapter(m_nextBuffer, index, scrollToEnd, true, !movingPrevious, movingPrevious);
         m_swapBuffer = &m_nextBuffer;
     }
     updateNavigationActions();
@@ -1671,6 +1875,8 @@ void MainWindow::goToHref(const QString& href) {
     m_nextBuffer.chapter.ready = false;
     m_nextBuffer.chapter.forNavigation = true;
     m_nextBuffer.chapter.scrollToEnd = false;
+    m_nextBuffer.chapter.alignImageOnlyInitialRight = true;
+    m_nextBuffer.chapter.alignImageOnlyInitialLeft = false;
     setViewLoaded(m_nextBuffer.view, false);
     m_nextBuffer.view->setUrl(url);
 
@@ -1678,7 +1884,8 @@ void MainWindow::goToHref(const QString& href) {
     updateStatus();
 }
 
-void MainWindow::loadBufferedChapter(BufferedView& buffer, int index, bool scrollToEnd, bool forNavigation) {
+void MainWindow::loadBufferedChapter(BufferedView& buffer, int index, bool scrollToEnd, bool forNavigation,
+                                     bool alignImageOnlyInitialRight, bool alignImageOnlyInitialLeft) {
     if (!m_reader->isOpen()) return;
     if (index < 0 || index >= m_reader->chapterCount()) return;
 
@@ -1687,6 +1894,8 @@ void MainWindow::loadBufferedChapter(BufferedView& buffer, int index, bool scrol
     buffer.chapter.ready = false;
     buffer.chapter.forNavigation = forNavigation;
     buffer.chapter.scrollToEnd = scrollToEnd;
+    buffer.chapter.alignImageOnlyInitialRight = alignImageOnlyInitialRight;
+    buffer.chapter.alignImageOnlyInitialLeft = alignImageOnlyInitialLeft;
     m_scrollToEnd = scrollToEnd;
 
     EpubChapter ch = m_reader->chapter(index);
@@ -1714,7 +1923,7 @@ void MainWindow::refreshPreloads() {
     const int next = nextReadingChapterIndex();
     if (next >= 0 &&
         !(m_nextBuffer.chapter.chapterIndex == next && !m_nextBuffer.chapter.forNavigation)) {
-        loadBufferedChapter(m_nextBuffer, next, false, false);
+        loadBufferedChapter(m_nextBuffer, next, false, false, true, false);
     }
 
     if (m_preloadMode != PreloadMode::NextAndPrevious) return;
@@ -1722,7 +1931,7 @@ void MainWindow::refreshPreloads() {
     const int previous = previousReadingChapterIndex();
     if (previous >= 0 &&
         !(m_previousBuffer.chapter.chapterIndex == previous && !m_previousBuffer.chapter.forNavigation)) {
-        loadBufferedChapter(m_previousBuffer, previous, true, false);
+        loadBufferedChapter(m_previousBuffer, previous, true, false, false, true);
     }
 }
 
@@ -1759,6 +1968,22 @@ bool MainWindow::scrollToEndForView(QWebEngineView* view) const {
     return m_scrollToEnd;
 }
 
+bool MainWindow::alignImageOnlyInitialRightForView(QWebEngineView* view) const {
+    if (view && view->page() == m_nextBuffer.page)
+        return m_nextBuffer.chapter.alignImageOnlyInitialRight;
+    if (view && view->page() == m_previousBuffer.page)
+        return m_previousBuffer.chapter.alignImageOnlyInitialRight;
+    return false;
+}
+
+bool MainWindow::alignImageOnlyInitialLeftForView(QWebEngineView* view) const {
+    if (view && view->page() == m_nextBuffer.page)
+        return m_nextBuffer.chapter.alignImageOnlyInitialLeft;
+    if (view && view->page() == m_previousBuffer.page)
+        return m_previousBuffer.chapter.alignImageOnlyInitialLeft;
+    return false;
+}
+
 void MainWindow::promoteBuffer(BufferedView& buffer) {
     QWebEngineView* oldActiveView = m_activeView;
     EpubWebPage* oldActivePage = m_activePage;
@@ -1779,7 +2004,7 @@ void MainWindow::promoteBuffer(BufferedView& buffer) {
         if (movedNext) {
             m_previousBuffer.view = oldActiveView;
             m_previousBuffer.page = oldActivePage;
-            m_previousBuffer.chapter = {oldChapter, true, false, true};
+            m_previousBuffer.chapter = {oldChapter, true, false, true, false, true};
             m_nextBuffer.view = spareView;
             m_nextBuffer.page = sparePage;
             m_nextBuffer.chapter = {};
@@ -1797,7 +2022,7 @@ void MainWindow::promoteBuffer(BufferedView& buffer) {
         if (movedPrevious) {
             m_nextBuffer.view = oldActiveView;
             m_nextBuffer.page = oldActivePage;
-            m_nextBuffer.chapter = {oldChapter, true, false, false};
+            m_nextBuffer.chapter = {oldChapter, true, false, false, true, false};
             m_previousBuffer.view = spareView;
             m_previousBuffer.page = sparePage;
             m_previousBuffer.chapter = {};
@@ -1907,6 +2132,62 @@ void MainWindow::manageBookmarks() {
         QMessageBox::information(this, tr("しおり"), tr("しおりがありません。"));
 }
 
+void MainWindow::exportBookmarkBackup() {
+    saveCurrentReadingPosition();
+
+    const QString stamp = QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss");
+    const QString defaultName = QStringLiteral("bibi-backup-%1.bibi-backup.json").arg(stamp);
+    const QString filePath = QFileDialog::getSaveFileName(
+        this,
+        tr("バックアップを書き出し"),
+        QDir::home().filePath(defaultName),
+        tr("Bibi バックアップ (*.bibi-backup.json);;JSON (*.json)"));
+    if (filePath.isEmpty()) return;
+
+    QString error;
+    if (!m_bookmarkManager->exportBackup(filePath, &error)) {
+        QMessageBox::warning(this, tr("バックアップ"),
+                             tr("バックアップを書き出せませんでした。\n%1").arg(error));
+        return;
+    }
+
+    statusBar()->showMessage(tr("バックアップを書き出しました"), 2000);
+}
+
+void MainWindow::importBookmarkBackup() {
+    const QString filePath = QFileDialog::getOpenFileName(
+        this,
+        tr("バックアップを読み込み"),
+        QDir::homePath(),
+        tr("Bibi バックアップ (*.bibi-backup.json);;JSON (*.json)"));
+    if (filePath.isEmpty()) return;
+
+    const auto answer = QMessageBox::question(
+        this,
+        tr("バックアップを読み込み"),
+        tr("バックアップを現在のしおり・読書位置にマージします。\n"
+           "同じIDのしおりは上書きされ、読書位置は新しい日時のものが優先されます。\n\n"
+           "読み込みますか？"));
+    if (answer != QMessageBox::Yes) return;
+
+    int bookmarkCount = 0;
+    int readingPositionCount = 0;
+    QString error;
+    if (!m_bookmarkManager->importBackup(filePath, &error, &bookmarkCount, &readingPositionCount)) {
+        QMessageBox::warning(this, tr("バックアップ"),
+                             tr("バックアップを読み込めませんでした。\n%1").arg(error));
+        return;
+    }
+
+    refreshBookmarkList();
+    QMessageBox::information(
+        this,
+        tr("バックアップ"),
+        tr("バックアップを読み込みました。\nしおり: %1件\n読書位置: %2件")
+            .arg(bookmarkCount)
+            .arg(readingPositionCount));
+}
+
 // ── Search ────────────────────────────────────────────────────────────────
 
 void MainWindow::showSearch() {
@@ -1931,14 +2212,13 @@ void MainWindow::runSearch() {
     m_searchQuery = query;
     m_searchResults = m_reader->search(query);
     m_searchIndex = m_searchResults.isEmpty() ? -1 : firstSearchResultAtOrAfterCurrentChapter();
+    refreshSearchResultList();
 
     const bool hasResults = !m_searchResults.isEmpty();
     m_searchPrevAct->setEnabled(hasResults);
     m_searchNextAct->setEnabled(hasResults);
     m_searchListAct->setEnabled(hasResults);
-    m_searchCountLabel->setText(hasResults
-        ? tr("%1 / %2").arg(m_searchIndex + 1).arg(m_searchResults.size())
-        : tr("見つかりません"));
+    updateSearchCountLabel();
 }
 
 void MainWindow::searchNext() {
@@ -1957,7 +2237,8 @@ void MainWindow::searchNext() {
         m_searchIndex = (m_searchIndex + 1) % m_searchResults.size();
 
     const auto& result = m_searchResults[m_searchIndex];
-    m_searchCountLabel->setText(tr("%1 / %2").arg(m_searchIndex + 1).arg(m_searchResults.size()));
+    updateSearchCountLabel();
+    refreshSearchResultList();
     jumpToSearchResult(result.chapterIndex, m_searchQuery, result.occurrenceIndex);
 }
 
@@ -1977,7 +2258,8 @@ void MainWindow::searchPrevious() {
         m_searchIndex = (m_searchIndex - 1 + m_searchResults.size()) % m_searchResults.size();
 
     const auto& result = m_searchResults[m_searchIndex];
-    m_searchCountLabel->setText(tr("%1 / %2").arg(m_searchIndex + 1).arg(m_searchResults.size()));
+    updateSearchCountLabel();
+    refreshSearchResultList();
     jumpToSearchResult(result.chapterIndex, m_searchQuery, result.occurrenceIndex);
 }
 
@@ -1985,30 +2267,27 @@ void MainWindow::openSearchResults() {
     if (m_searchResults.isEmpty())
         runSearch();
     if (m_searchResults.isEmpty()) return;
-
-    auto* dlg = new SearchDialog(m_reader, this);
-    dlg->setAttribute(Qt::WA_DeleteOnClose);
-    if (m_searchMenuAct)
-        m_searchMenuAct->setEnabled(false);
-    connect(dlg, &QObject::destroyed, this, [this] {
-        if (m_searchMenuAct)
-            m_searchMenuAct->setEnabled(true);
-    });
-    dlg->setResults(m_searchQuery, m_searchResults, m_searchIndex);
-    connect(dlg, &SearchDialog::resultSelected,
-            this, [this](int resultIndex, int chapterIndex, const QString&,
-                         const QString& query, int occurrenceIndex) {
-                m_searchIndex = resultIndex;
-                m_searchQuery = query;
-                if (m_searchCountLabel)
-                    m_searchCountLabel->setText(tr("%1 / %2").arg(m_searchIndex + 1).arg(m_searchResults.size()));
-                jumpToSearchResult(chapterIndex, query, occurrenceIndex);
-            });
-    dlg->show();
+    refreshSearchResultList();
+    if (m_sideTabs && m_searchResultTree) {
+        m_sideTabs->setVisible(true);
+        m_sideTabs->setCurrentWidget(m_searchResultTree);
+        m_searchResultTree->setFocus(Qt::OtherFocusReason);
+    }
 }
 
 void MainWindow::closeSearchBar() {
     clearSearchHighlights();
+    m_searchResults.clear();
+    m_searchIndex = -1;
+    m_searchQuery.clear();
+    refreshSearchResultList();
+    updateSearchCountLabel();
+    if (m_searchPrevAct)
+        m_searchPrevAct->setEnabled(false);
+    if (m_searchNextAct)
+        m_searchNextAct->setEnabled(false);
+    if (m_searchListAct)
+        m_searchListAct->setEnabled(false);
     if (m_searchBar)
         m_searchBar->setVisible(false);
 }
@@ -2367,8 +2646,10 @@ void MainWindow::applyZoomToViews() {
                     if (!ready) {
                         requestAnimationFrame(function() {
                             applyImageZoom();
-                            if (window._bibiAlignImageOnlyInitialRight)
+                            if (window._bibiAlignImageOnlyInitialRightEnabled && window._bibiAlignImageOnlyInitialRight)
                                 window._bibiAlignImageOnlyInitialRight();
+                            else if (window._bibiAlignImageOnlyInitialLeftEnabled && window._bibiAlignImageOnlyInitialLeft)
+                                window._bibiAlignImageOnlyInitialLeft();
                             if (window._bibiReportReadingPosition)
                                 window._bibiReportReadingPosition();
                         });
@@ -2383,10 +2664,16 @@ void MainWindow::applyZoomToViews() {
                 var el = document.scrollingElement || document.documentElement;
                 if (el.scrollWidth <= el.clientWidth) return;
                 var maxH = Math.max(0, el.scrollWidth - el.clientWidth);
-                if (prevCanH)
-                    el.scrollLeft = prevScrollRatio * maxH;
-                else
+                if (window._bibiAlignImageOnlyInitialLeftEnabled && window._bibiAlignImageOnlyInitialLeft)
+                    window._bibiAlignImageOnlyInitialLeft();
+                else if (window._bibiAlignImageOnlyInitialRightEnabled && window._bibiAlignImageOnlyInitialRight)
+                    window._bibiAlignImageOnlyInitialRight();
+                else if (window._bibiAlignImageOnlyInitialLeftEnabled)
+                    el.scrollLeft = -maxH;
+                else if (window._bibiAlignImageOnlyInitialRightEnabled)
                     el.scrollLeft = maxH;
+                else if (prevCanH)
+                    el.scrollLeft = prevScrollRatio * maxH;
                 if (window._bibiReportReadingPosition) window._bibiReportReadingPosition();
             });
         })();

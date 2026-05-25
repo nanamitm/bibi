@@ -28,7 +28,6 @@ set(SOURCES
     src/epubwebpage.cpp
     src/bookmarkmanager.cpp
     src/recentfiles.cpp
-    src/searchdialog.cpp
     resources.qrc
 )
 

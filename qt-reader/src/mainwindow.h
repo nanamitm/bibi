@@ -13,12 +13,14 @@ class QWebEngineView;
 class QTabWidget;
 class QTreeWidget;
 class QTreeWidgetItem;
+class QTreeView;
 class QSplitter;
 class QLabel;
 class QProgressBar;
 class QAction;
 class QMenu;
 class QLineEdit;
+class QFileSystemModel;
 class EpubUrlScheme;
 
 class MainWindow : public QMainWindow {
@@ -39,6 +41,8 @@ private:
         bool ready = false;
         bool forNavigation = false;
         bool scrollToEnd = false;
+        bool alignImageOnlyInitialRight = false;
+        bool alignImageOnlyInitialLeft = false;
     };
 
     struct BufferedView {
@@ -65,7 +69,9 @@ private:
 
     void goToChapter(int index);
     void goToHref(const QString& href);
-    void loadBufferedChapter(BufferedView& buffer, int index, bool scrollToEnd, bool forNavigation);
+    void loadBufferedChapter(BufferedView& buffer, int index, bool scrollToEnd, bool forNavigation,
+                             bool alignImageOnlyInitialRight = false,
+                             bool alignImageOnlyInitialLeft = false);
     void refreshPreloads();
     void invalidatePreloads();
     int nextReadingChapterIndex() const;
@@ -74,6 +80,8 @@ private:
     BufferedView* bufferForPage(EpubWebPage* page);
     const BufferedView* bufferForPage(EpubWebPage* page) const;
     bool scrollToEndForView(QWebEngineView* view) const;
+    bool alignImageOnlyInitialRightForView(QWebEngineView* view) const;
+    bool alignImageOnlyInitialLeftForView(QWebEngineView* view) const;
     void promoteBuffer(BufferedView& buffer);
     void goToCover();
     void goToBookEnd();
@@ -85,6 +93,10 @@ private:
     void onNavRight();
     void addBookmark();
     void manageBookmarks();
+    void exportBookmarkBackup();
+    void importBookmarkBackup();
+    void chooseFolderRoot();
+    void onFolderFileActivated(const QModelIndex& index);
     void showSearch();
     void runSearch();
     void searchNext();
@@ -101,12 +113,18 @@ private:
     void refreshBookmarkList();
     void onBookmarkActivated(QTreeWidgetItem* item, int column);
     void showBookmarkContextMenu(const QPoint& pos);
+    void refreshSearchResultList();
+    void selectSearchResultItem(int resultIndex);
+    void updateSearchCountLabel();
+    void onSearchResultActivated(QTreeWidgetItem* item, int column);
     void showReaderContextMenu(QWebEngineView* view, const QPoint& pos);
     void jumpToBookmark(const Bookmark& bm);
     void jumpToReadingPosition(const ReadingPosition& pos);
     void jumpToSearchResult(int chapterIndex, const QString& query, int occurrenceIndex = 0);
     void saveCurrentReadingPosition();
     QString chapterLabel(int chapterIndex) const;
+    void setFolderRoot(const QString& path, bool saveSetting = true);
+    void selectFolderFile(const QString& filePath);
 
     void updateNavigationActions();
     void updateWindowTitle();
@@ -146,6 +164,11 @@ private:
     QTreeWidget*     m_tocTree;
     QTabWidget*      m_sideTabs;
     QTreeWidget*     m_bookmarkTree;
+    QTreeWidget*     m_searchResultTree = nullptr;
+    QWidget*         m_folderTab = nullptr;
+    QTreeView*       m_folderTree = nullptr;
+    QFileSystemModel* m_folderModel = nullptr;
+    bool             m_folderRootConfigured = false;
     QSplitter*       m_splitter;
     QLabel*          m_statusLabel;
     QProgressBar*    m_progressBar;

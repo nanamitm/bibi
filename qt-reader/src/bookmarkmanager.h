@@ -33,6 +33,11 @@ public:
     void saveReadingPosition(const ReadingPosition& pos);
     bool readingPositionForEpub(const QString& epubPath, ReadingPosition* pos) const;
 
+    bool exportBackup(const QString& filePath, QString* errorMessage = nullptr) const;
+    bool importBackup(const QString& filePath, QString* errorMessage = nullptr,
+                      int* importedBookmarks = nullptr,
+                      int* importedReadingPositions = nullptr);
+
     void load();
     void save();
 

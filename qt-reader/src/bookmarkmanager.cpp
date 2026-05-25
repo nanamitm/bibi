@@ -5,7 +5,54 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonParseError>
 #include <QUuid>
+
+namespace {
+QJsonObject bookmarkToJson(const Bookmark& bm) {
+    QJsonObject obj;
+    obj["id"]             = bm.id;
+    obj["epubPath"]       = bm.epubPath;
+    obj["chapterIndex"]   = bm.chapterIndex;
+    obj["scrollPosition"] = bm.scrollPosition;
+    obj["label"]          = bm.label;
+    obj["createdAt"]      = bm.createdAt.toString(Qt::ISODate);
+    return obj;
+}
+
+Bookmark bookmarkFromJson(const QJsonObject& obj) {
+    Bookmark bm;
+    bm.id             = obj["id"].toString();
+    bm.epubPath       = obj["epubPath"].toString();
+    bm.chapterIndex   = obj["chapterIndex"].toInt();
+    bm.scrollPosition = qBound(0.0, obj["scrollPosition"].toDouble(), 1.0);
+    bm.label          = obj["label"].toString();
+    bm.createdAt      = QDateTime::fromString(obj["createdAt"].toString(), Qt::ISODate);
+    if (!bm.createdAt.isValid())
+        bm.createdAt = QDateTime::currentDateTime();
+    return bm;
+}
+
+QJsonObject readingPositionToJson(const ReadingPosition& pos) {
+    QJsonObject obj;
+    obj["epubPath"]       = pos.epubPath;
+    obj["chapterIndex"]   = pos.chapterIndex;
+    obj["scrollPosition"] = pos.scrollPosition;
+    obj["updatedAt"]      = pos.updatedAt.toString(Qt::ISODate);
+    return obj;
+}
+
+ReadingPosition readingPositionFromJson(const QJsonObject& obj) {
+    ReadingPosition pos;
+    pos.epubPath       = obj["epubPath"].toString();
+    pos.chapterIndex   = obj["chapterIndex"].toInt();
+    pos.scrollPosition = qBound(0.0, obj["scrollPosition"].toDouble(), 1.0);
+    pos.updatedAt      = QDateTime::fromString(obj["updatedAt"].toString(), Qt::ISODate);
+    if (!pos.updatedAt.isValid())
+        pos.updatedAt = QDateTime::currentDateTime();
+    return pos;
+}
+}
 
 BookmarkManager::BookmarkManager(QObject* parent) : QObject(parent) {
     load();
@@ -102,16 +149,8 @@ bool BookmarkManager::readingPositionForEpub(const QString& epubPath,
 
 void BookmarkManager::save() {
     QJsonArray arr;
-    for (const auto& bm : m_bookmarks) {
-        QJsonObject obj;
-        obj["id"]             = bm.id;
-        obj["epubPath"]       = bm.epubPath;
-        obj["chapterIndex"]   = bm.chapterIndex;
-        obj["scrollPosition"] = bm.scrollPosition;
-        obj["label"]          = bm.label;
-        obj["createdAt"]      = bm.createdAt.toString(Qt::ISODate);
-        arr.append(obj);
-    }
+    for (const auto& bm : m_bookmarks)
+        arr.append(bookmarkToJson(bm));
     QFile f(storagePath());
     if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
         f.write(QJsonDocument(arr).toJson());
@@ -119,14 +158,8 @@ void BookmarkManager::save() {
 
 void BookmarkManager::saveReadingPositions() const {
     QJsonArray arr;
-    for (const ReadingPosition& pos : m_readingPositions) {
-        QJsonObject obj;
-        obj["epubPath"]       = pos.epubPath;
-        obj["chapterIndex"]   = pos.chapterIndex;
-        obj["scrollPosition"] = pos.scrollPosition;
-        obj["updatedAt"]      = pos.updatedAt.toString(Qt::ISODate);
-        arr.append(obj);
-    }
+    for (const ReadingPosition& pos : m_readingPositions)
+        arr.append(readingPositionToJson(pos));
     QFile f(readingPositionsPath());
     if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
         f.write(QJsonDocument(arr).toJson());
@@ -141,14 +174,7 @@ void BookmarkManager::load() {
     m_bookmarks.clear();
     bool needsSave = false;
     for (const QJsonValue& v : doc.array()) {
-        QJsonObject obj = v.toObject();
-        Bookmark bm;
-        bm.id             = obj["id"].toString();
-        bm.epubPath       = obj["epubPath"].toString();
-        bm.chapterIndex   = obj["chapterIndex"].toInt();
-        bm.scrollPosition = obj["scrollPosition"].toDouble();
-        bm.label          = obj["label"].toString();
-        bm.createdAt      = QDateTime::fromString(obj["createdAt"].toString(), Qt::ISODate);
+        Bookmark bm = bookmarkFromJson(v.toObject());
         if (bm.id.isEmpty()) {
             bm.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
             needsSave = true;
@@ -167,13 +193,105 @@ void BookmarkManager::loadReadingPositions() {
 
     m_readingPositions.clear();
     for (const QJsonValue& v : doc.array()) {
-        QJsonObject obj = v.toObject();
-        ReadingPosition pos;
-        pos.epubPath       = obj["epubPath"].toString();
-        pos.chapterIndex   = obj["chapterIndex"].toInt();
-        pos.scrollPosition = obj["scrollPosition"].toDouble();
-        pos.updatedAt      = QDateTime::fromString(obj["updatedAt"].toString(), Qt::ISODate);
+        ReadingPosition pos = readingPositionFromJson(v.toObject());
         if (!pos.epubPath.isEmpty())
             m_readingPositions.append(pos);
     }
+}
+
+bool BookmarkManager::exportBackup(const QString& filePath, QString* errorMessage) const {
+    QJsonArray bookmarks;
+    for (const Bookmark& bm : m_bookmarks)
+        bookmarks.append(bookmarkToJson(bm));
+
+    QJsonArray readingPositions;
+    for (const ReadingPosition& pos : m_readingPositions)
+        readingPositions.append(readingPositionToJson(pos));
+
+    QJsonObject root;
+    root["format"] = "BibiQtReaderBackup";
+    root["version"] = 1;
+    root["exportedAt"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+    root["bookmarks"] = bookmarks;
+    root["readingPositions"] = readingPositions;
+
+    QFile f(filePath);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (errorMessage) *errorMessage = f.errorString();
+        return false;
+    }
+    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    return true;
+}
+
+bool BookmarkManager::importBackup(const QString& filePath, QString* errorMessage,
+                                   int* importedBookmarks, int* importedReadingPositions) {
+    if (importedBookmarks) *importedBookmarks = 0;
+    if (importedReadingPositions) *importedReadingPositions = 0;
+
+    QFile f(filePath);
+    if (!f.open(QIODevice::ReadOnly)) {
+        if (errorMessage) *errorMessage = f.errorString();
+        return false;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        if (errorMessage) *errorMessage = parseError.errorString();
+        return false;
+    }
+
+    const QJsonObject root = doc.object();
+    if (root["format"].toString() != "BibiQtReaderBackup" ||
+        root["version"].toInt() != 1) {
+        if (errorMessage) *errorMessage = tr("対応していないバックアップ形式です。");
+        return false;
+    }
+
+    for (const QJsonValue& value : root["bookmarks"].toArray()) {
+        Bookmark bm = bookmarkFromJson(value.toObject());
+        if (bm.epubPath.isEmpty()) continue;
+        if (bm.id.isEmpty())
+            bm.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+
+        bool replaced = false;
+        for (Bookmark& existing : m_bookmarks) {
+            if (existing.id == bm.id) {
+                existing = bm;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced)
+            m_bookmarks.append(bm);
+        if (importedBookmarks) ++(*importedBookmarks);
+    }
+
+    for (const QJsonValue& value : root["readingPositions"].toArray()) {
+        ReadingPosition pos = readingPositionFromJson(value.toObject());
+        if (pos.epubPath.isEmpty()) continue;
+
+        bool replaced = false;
+        for (ReadingPosition& existing : m_readingPositions) {
+            if (existing.epubPath == pos.epubPath) {
+                if (!existing.updatedAt.isValid() ||
+                    !pos.updatedAt.isValid() ||
+                    pos.updatedAt >= existing.updatedAt) {
+                    existing = pos;
+                    if (importedReadingPositions) ++(*importedReadingPositions);
+                }
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            m_readingPositions.append(pos);
+            if (importedReadingPositions) ++(*importedReadingPositions);
+        }
+    }
+
+    save();
+    saveReadingPositions();
+    return true;
 }

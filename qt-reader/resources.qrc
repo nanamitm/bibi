@@ -3,4 +3,18 @@
         <file alias="app.svg">assets/app-icon.svg</file>
         <file alias="app.ico">assets/app-icon.ico</file>
     </qresource>
+    <qresource prefix="/scripts">
+        <file alias="bibi_ellipsis.js">src/scripts/bibi_ellipsis.js</file>
+        <file alias="bibi_reading_insets.js">src/scripts/bibi_reading_insets.js</file>
+        <file alias="bibi_position_reporter.js">src/scripts/bibi_position_reporter.js</file>
+        <file alias="bibi_page_ready.js">src/scripts/bibi_page_ready.js</file>
+        <file alias="bibi_wheel.js">src/scripts/bibi_wheel.js</file>
+        <file alias="bibi_keyboard.js">src/scripts/bibi_keyboard.js</file>
+        <file alias="bibi_drag.js">src/scripts/bibi_drag.js</file>
+        <file alias="bibi_scroll_to_position.js">src/scripts/bibi_scroll_to_position.js</file>
+        <file alias="bibi_get_reading_position.js">src/scripts/bibi_get_reading_position.js</file>
+        <file alias="bibi_clear_highlights.js">src/scripts/bibi_clear_highlights.js</file>
+        <file alias="bibi_search_highlight.js">src/scripts/bibi_search_highlight.js</file>
+        <file alias="bibi_zoom.js">src/scripts/bibi_zoom.js</file>
+    </qresource>
 </RCC>

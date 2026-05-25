@@ -8,12 +8,13 @@
 #include <QRegularExpression>
 #include <QMutex>
 #include <QMutexLocker>
+#include <atomic>
 
 struct EpubReader::ZipImpl {
-    mz_zip_archive  archive{};
-    QByteArray      epubData;   // owns the buffer for mz_zip_reader_init_mem
-    bool            isOpen = false;
-    mutable QMutex  mutex;
+    mz_zip_archive    archive{};
+    QByteArray        epubData;   // owns the buffer for mz_zip_reader_init_mem
+    std::atomic<bool> isOpen{false};
+    mutable QMutex    mutex;
 };
 
 EpubReader::EpubReader(QObject* parent)
@@ -70,7 +71,10 @@ void EpubReader::close() {
     m_toc.clear();
     m_spine.clear();
     m_idToHref.clear();
-    m_mimeTypes.clear();
+    {
+        QMutexLocker lk(&m_mimeLock);
+        m_mimeTypes.clear();
+    }
     m_opfDir.clear();
     {
         QMutexLocker lk(&m_cacheLock);
@@ -89,6 +93,11 @@ int           EpubReader::chapterCount() const { return m_spine.size(); }
 EpubChapter   EpubReader::chapter(int i) const { return m_spine.value(i); }
 
 QByteArray EpubReader::fileData(const QString& epubPath) const {
+    // Reject path traversal: ".." segments could reference ZIP entries outside the EPUB root
+    for (const auto& seg : epubPath.split(u'/')) {
+        if (seg == QLatin1String("..")) return {};
+    }
+
     // ① キャッシュ確認（ヒット時は先頭に移動して LRU 順を更新）
     {
         QMutexLocker lk(&m_cacheLock);
@@ -131,6 +140,7 @@ QByteArray EpubReader::fileData(const QString& epubPath) const {
 }
 
 QString EpubReader::mimeTypeForPath(const QString& path) const {
+    QMutexLocker lk(&m_mimeLock);
     return m_mimeTypes.value(path, {});
 }
 
@@ -239,6 +249,7 @@ bool EpubReader::parseOpf(const QString& opfPath) {
     // ── Manifest ──────────────────────────────────────────────────────────
     QDomElement manifest = pkg.firstChildElement("manifest");
     QString ncxId, navId;
+    QMap<QString, QString> newMimeTypes;
 
     QDomNodeList items = manifest.elementsByTagName("item");
     for (int i = 0; i < items.size(); ++i) {
@@ -251,10 +262,15 @@ bool EpubReader::parseOpf(const QString& opfPath) {
         // Decode percent-encoding in href
         QString fullHref  = resolvePath(m_opfDir, QUrl::fromPercentEncoding(href.toUtf8()));
         m_idToHref[id]    = fullHref;
-        m_mimeTypes[fullHref] = mediaType;
+        newMimeTypes[fullHref] = mediaType;
 
         if (mediaType == "application/x-dtbncx+xml") ncxId = id;
         if (properties.contains("nav"))              navId = id;
+    }
+    // Publish the completed map atomically so the IO thread never sees a partial build
+    {
+        QMutexLocker lk(&m_mimeLock);
+        m_mimeTypes = std::move(newMimeTypes);
     }
 
     // ── Spine ─────────────────────────────────────────────────────────────

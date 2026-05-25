@@ -87,6 +87,7 @@ private:
     mutable QHash<QString, LruList::iterator>  m_lruIndex;  // key → リスト位置
     mutable QMutex                             m_cacheLock;
     mutable qint64                             m_cacheBytes = 0;
+    mutable QMutex                             m_mimeLock;  // protects m_mimeTypes (IO thread)
     static constexpr qint64                    kCacheLimit  = 100LL * 1024 * 1024;
 
     struct ZipImpl;

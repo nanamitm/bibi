@@ -1,6 +1,8 @@
 #pragma once
 #include <QMainWindow>
 #include <QFuture>
+#include <QFutureWatcher>
+#include <QHash>
 #include <QTimer>
 #include <QSet>
 #include <functional>
@@ -99,6 +101,7 @@ private:
     void onFolderFileActivated(const QModelIndex& index);
     void showSearch();
     void runSearch();
+    void onSearchFinished();
     void searchNext();
     void searchPrevious();
     void openSearchResults();
@@ -187,17 +190,22 @@ private:
     QAction* m_searchNextAct = nullptr;
     QAction* m_searchListAct = nullptr;
     QAction* m_searchMenuAct = nullptr;
+    QFutureWatcher<QList<EpubReader::SearchResult>>* m_searchWatcher = nullptr;
+    std::function<void()> m_postSearchAction;
     QList<EpubReader::SearchResult> m_searchResults;
     QString m_searchQuery;
     int m_searchIndex = -1;
     QString m_highlightedSearchQuery;
     int m_highlightedSearchChapter = -1;
 
+    QHash<QString, int> m_hrefIndex; // href (フラグメントなし) → spine インデックス
+
     int    m_currentChapter  = -1;
     bool   m_isRtl           = false;
     double m_zoomFactor      = 1.0;
     double m_currentScrollPosition = 0.0;
-    bool m_scrollToEnd     = false;
+    bool m_scrollToEnd            = false;
+    bool m_pixelSwapDetection     = true;
     PreloadMode m_preloadMode = PreloadMode::NextAndPrevious;
     QSet<QWebEngineView*> m_loadedViews;
     QFuture<void> m_prefetchFuture;

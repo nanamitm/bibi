@@ -7,6 +7,7 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QUuid>
+#include <QDebug>
 
 namespace {
 QJsonObject bookmarkToJson(const Bookmark& bm) {
@@ -152,8 +153,13 @@ void BookmarkManager::save() {
     for (const auto& bm : m_bookmarks)
         arr.append(bookmarkToJson(bm));
     QFile f(storagePath());
-    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        f.write(QJsonDocument(arr).toJson());
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        qWarning() << "BookmarkManager: cannot open bookmarks file for writing:" << f.errorString();
+        return;
+    }
+    const QByteArray data = QJsonDocument(arr).toJson();
+    if (f.write(data) != data.size())
+        qWarning() << "BookmarkManager: bookmarks write incomplete:" << f.errorString();
 }
 
 void BookmarkManager::saveReadingPositions() const {
@@ -161,8 +167,13 @@ void BookmarkManager::saveReadingPositions() const {
     for (const ReadingPosition& pos : m_readingPositions)
         arr.append(readingPositionToJson(pos));
     QFile f(readingPositionsPath());
-    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        f.write(QJsonDocument(arr).toJson());
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        qWarning() << "BookmarkManager: cannot open reading-positions file for writing:" << f.errorString();
+        return;
+    }
+    const QByteArray data = QJsonDocument(arr).toJson();
+    if (f.write(data) != data.size())
+        qWarning() << "BookmarkManager: reading-positions write incomplete:" << f.errorString();
 }
 
 void BookmarkManager::load() {
@@ -220,7 +231,11 @@ bool BookmarkManager::exportBackup(const QString& filePath, QString* errorMessag
         if (errorMessage) *errorMessage = f.errorString();
         return false;
     }
-    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    const QByteArray json = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    if (f.write(json) != json.size()) {
+        if (errorMessage) *errorMessage = f.errorString();
+        return false;
+    }
     return true;
 }
 

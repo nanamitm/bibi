@@ -23,6 +23,12 @@ FetchContent_MakeAvailable(miniz)
 set(SOURCES
     src/main.cpp
     src/mainwindow.cpp
+    src/mainwindow_setup.cpp
+    src/mainwindow_buffer.cpp
+    src/mainwindow_navigation.cpp
+    src/mainwindow_search.cpp
+    src/mainwindow_bookmark.cpp
+    src/mainwindow_ui.cpp
     src/epubreader.cpp
     src/epuburlscheme.cpp
     src/epubwebpage.cpp

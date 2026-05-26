@@ -3,6 +3,10 @@ Bibi
 
 EPUB Reader on your website.
 
+This fork also includes **Bibi Qt Reader**, a native desktop EPUB reader built with Qt 6/C++.
+Prebuilt Windows and Linux packages are available from the
+[nanamitm/bibi release page](https://github.com/nanamitm/bibi/releases).
+
 
 
 
@@ -24,11 +28,37 @@ And you can embed it in other webpages (like YouTube videos).
 
 ### Table of Contents
 
-1. [How to Setup &amp; Read/Publish EPUB Books](#how-to-setup--readpublish-epub-books) (for Users/Publishers)
-2. [How to Arrange Development Environment](#how-to-arrange-development-environment) (for Developers)
-3. [License](#license)
-4. [Special Thanks](#special-thanks)
-5. [Supported by](#supported-by)
+1. [Bibi Qt Reader Desktop App](#bibi-qt-reader-desktop-app)
+2. [How to Setup &amp; Read/Publish EPUB Books](#how-to-setup--readpublish-epub-books) (for Users/Publishers)
+3. [How to Arrange Development Environment](#how-to-arrange-development-environment) (for Developers)
+4. [License](#license)
+5. [Special Thanks](#special-thanks)
+6. [Supported by](#supported-by)
+
+
+
+
+--------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
+Bibi Qt Reader Desktop App
+--------------------------------------------------------------------------------------------------------------------------------
+
+This repository contains `qt-reader/`, a Qt 6 desktop EPUB reader based on Bibi's reading experience.
+It is useful when you want to open local EPUB files as a native application instead of hosting Bibi on a web server.
+
+Download prebuilt packages from the [release page](https://github.com/nanamitm/bibi/releases):
+
+* `BibiQtReader-windows-x64.zip` for Windows
+* `BibiQtReader-linux-x86_64.AppImage` for Linux
+
+For Windows, unzip the package and run `BibiQtReader.exe` from the extracted folder.
+Keep the bundled Qt runtime files together with the executable. In particular, `QtWebEngineProcess.exe` is required by
+Qt WebEngine and should not be removed from the release package.
+
+For build instructions and implementation notes, see [`qt-reader/README.md`](qt-reader/README.md).
 
 
 
@@ -251,6 +281,5 @@ Supported by
 
 * Bibi v1.0.0 was developed with greateful support and sponsoring from Lunascape.
 * Lunascape also developed [Bibi Zip Loader](https://github.com/lunascape/bibi-zip-loader) especially for Bibi, which realized fast progressive loading of zipped EPUBs.
-
 
 

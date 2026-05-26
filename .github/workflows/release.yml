@@ -138,6 +138,7 @@ jobs:
           QMAKE: ${{ runner.temp }}/Qt/${{ env.QT_VERSION }}/gcc_64/bin/qmake
         run: |
           cd qt-reader
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/Qt/$QT_VERSION/gcc_64/lib:${LD_LIBRARY_PATH:-}"
           wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
           chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-qt-x86_64.AppImage

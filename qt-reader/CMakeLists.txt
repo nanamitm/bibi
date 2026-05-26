@@ -9,6 +9,7 @@ set(CMAKE_AUTOUIC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS
     Core Gui Widgets WebEngineWidgets WebEngineCore Xml Concurrent)
+include(GNUInstallDirs)
 
 include(FetchContent)
 FetchContent_Declare(

@@ -1,0 +1,162 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: BibiQtReader
+  QT_VERSION: "6.7.3"
+
+jobs:
+  windows:
+    name: Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install Qt
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install aqtinstall
+          python -m aqt install-qt windows desktop $env:QT_VERSION win64_msvc2019_64 `
+            --outputdir "$env:RUNNER_TEMP/Qt" `
+            --modules qtwebengine
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_PREFIX_PATH="$env:RUNNER_TEMP/Qt/$env:QT_VERSION/msvc2019_64" `
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config Release --parallel
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $package = "$env:APP_NAME-windows-x64"
+          New-Item -ItemType Directory -Force -Path "dist/$package" | Out-Null
+          Copy-Item "build/Release/$env:APP_NAME.exe" "dist/$package/"
+          & "$env:RUNNER_TEMP/Qt/$env:QT_VERSION/msvc2019_64/bin/windeployqt.exe" `
+            --release `
+            --no-translations `
+            --compiler-runtime `
+            --webengine `
+            "dist/$package/$env:APP_NAME.exe"
+          Compress-Archive -Path "dist/$package/*" -DestinationPath "dist/$package.zip" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BibiQtReader-windows-x64
+          path: dist/BibiQtReader-windows-x64.zip
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/BibiQtReader-windows-x64.zip
+
+  linux-appimage:
+    name: Linux AppImage
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            libfuse2 \
+            ninja-build \
+            libgl1-mesa-dev \
+            libegl1-mesa-dev \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-render-util0 \
+            libxcb-shape0 \
+            libxcb-xinerama0 \
+            libxcb-xinput0
+
+      - name: Install Qt
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install aqtinstall
+          python3 -m aqt install-qt linux desktop "$QT_VERSION" linux_gcc_64 \
+            --outputdir "$RUNNER_TEMP/Qt" \
+            --modules qtwebengine
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/Qt/$QT_VERSION/gcc_64" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Install into AppDir
+        run: |
+          cmake --install build --prefix AppDir/usr
+          install -Dm644 assets/app-icon.svg AppDir/usr/share/icons/hicolor/scalable/apps/BibiQtReader.svg
+          install -Dm644 packaging/linux/BibiQtReader.desktop AppDir/usr/share/applications/BibiQtReader.desktop
+
+      - name: Build AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+          QMAKE: ${{ runner.temp }}/Qt/${{ env.QT_VERSION }}/gcc_64/bin/qmake
+        run: |
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-qt-x86_64.AppImage
+          ./linuxdeploy-x86_64.AppImage \
+            --appdir AppDir \
+            --desktop-file AppDir/usr/share/applications/BibiQtReader.desktop \
+            --icon-file AppDir/usr/share/icons/hicolor/scalable/apps/BibiQtReader.svg \
+            --plugin qt \
+            --output appimage
+          mkdir -p dist
+          appimage="$(find . -maxdepth 1 -name '*.AppImage' -print -quit)"
+          test -n "$appimage"
+          mv "$appimage" dist/BibiQtReader-linux-x86_64.AppImage
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BibiQtReader-linux-x86_64.AppImage
+          path: dist/BibiQtReader-linux-x86_64.AppImage
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/BibiQtReader-linux-x86_64.AppImage

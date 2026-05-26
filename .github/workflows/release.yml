@@ -58,7 +58,6 @@ jobs:
             --release `
             --no-translations `
             --compiler-runtime `
-            --webengine `
             "qt-reader/dist/$package/$env:APP_NAME.exe"
           Compress-Archive -Path "qt-reader/dist/$package/*" -DestinationPath "qt-reader/dist/$package.zip" -Force
 
@@ -94,6 +93,7 @@ jobs:
             build-essential \
             cmake \
             libfuse2 \
+            libcups2-dev \
             ninja-build \
             libgl1-mesa-dev \
             libegl1-mesa-dev \

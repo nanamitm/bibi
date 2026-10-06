@@ -5,6 +5,7 @@
 #include <QWebEngineView>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QToolBar>
 #include <QLineEdit>
 #include <QLabel>
@@ -108,10 +109,9 @@ void MainWindow::searchNext() {
         m_postSearchAction = [this]() {
             if (m_searchResults.isEmpty()) return;
             m_searchIndex = firstSearchResultAtOrAfterCurrentChapter();
-            const auto& result = m_searchResults[m_searchIndex];
             updateSearchCountLabel();
             refreshSearchResultList();
-            jumpToSearchResult(result.chapterIndex, m_searchQuery, result.occurrenceIndex);
+            jumpToSearchResult(m_searchIndex);
         };
         runSearch();
         return;
@@ -122,10 +122,9 @@ void MainWindow::searchNext() {
         ? firstSearchResultAtOrAfterCurrentChapter()
         : (m_searchIndex + 1) % m_searchResults.size();
 
-    const auto& result = m_searchResults[m_searchIndex];
     updateSearchCountLabel();
     refreshSearchResultList();
-    jumpToSearchResult(result.chapterIndex, m_searchQuery, result.occurrenceIndex);
+    jumpToSearchResult(m_searchIndex);
 }
 
 void MainWindow::searchPrevious() {
@@ -139,10 +138,9 @@ void MainWindow::searchPrevious() {
         m_postSearchAction = [this]() {
             if (m_searchResults.isEmpty()) return;
             m_searchIndex = lastSearchResultAtOrBeforeCurrentChapter();
-            const auto& result = m_searchResults[m_searchIndex];
             updateSearchCountLabel();
             refreshSearchResultList();
-            jumpToSearchResult(result.chapterIndex, m_searchQuery, result.occurrenceIndex);
+            jumpToSearchResult(m_searchIndex);
         };
         runSearch();
         return;
@@ -153,10 +151,9 @@ void MainWindow::searchPrevious() {
         ? lastSearchResultAtOrBeforeCurrentChapter()
         : (m_searchIndex - 1 + m_searchResults.size()) % m_searchResults.size();
 
-    const auto& result = m_searchResults[m_searchIndex];
     updateSearchCountLabel();
     refreshSearchResultList();
-    jumpToSearchResult(result.chapterIndex, m_searchQuery, result.occurrenceIndex);
+    jumpToSearchResult(m_searchIndex);
 }
 
 void MainWindow::openSearchResults() {
@@ -257,10 +254,9 @@ void MainWindow::onSearchResultActivated(QTreeWidgetItem* item, int /*column*/) 
     if (resultIndex < 0 || resultIndex >= m_searchResults.size()) return;
 
     m_searchIndex = resultIndex;
-    const auto& result = m_searchResults[m_searchIndex];
     updateSearchCountLabel();
     selectSearchResultItem(m_searchIndex);
-    jumpToSearchResult(result.chapterIndex, m_searchQuery, result.occurrenceIndex);
+    jumpToSearchResult(m_searchIndex);
 }
 
 int MainWindow::firstSearchResultAtOrAfterCurrentChapter() const {
@@ -281,15 +277,24 @@ int MainWindow::lastSearchResultAtOrBeforeCurrentChapter() const {
     return m_searchResults.size() - 1;
 }
 
-void MainWindow::jumpToSearchResult(int chapterIndex, const QString& query, int occurrenceIndex) {
+void MainWindow::jumpToSearchResult(int resultIndex) {
+    if (resultIndex < 0 || resultIndex >= m_searchResults.size()) return;
+
+    const EpubReader::SearchResult target = m_searchResults[resultIndex];
+    const int chapterIndex = target.chapterIndex;
+    const QString query = m_searchQuery;
     if (query.trimmed().isEmpty()) {
         goToChapter(chapterIndex);
         return;
     }
 
-    const QString queryJson = QString::fromUtf8(
-        QJsonDocument(QJsonArray{query}).toJson(QJsonDocument::Compact));
-    const QString needleExpression = queryJson.mid(1, queryJson.size() - 2);
+    // Every match of this chapter is highlighted; offsets refer to
+    // EpubReader::searchableText(), which the script rebuilds from the DOM.
+    QJsonArray matches;
+    for (const auto& result : m_searchResults) {
+        if (result.chapterIndex == chapterIndex)
+            matches.append(QJsonArray{result.matchStart, result.matchLength});
+    }
 
     int activeChapter = -1;
     if (m_activePage) {
@@ -301,15 +306,20 @@ void MainWindow::jumpToSearchResult(int chapterIndex, const QString& query, int 
         targetIsDisplayed &&
         chapterIndex == m_highlightedSearchChapter &&
         query == m_highlightedSearchQuery;
-    const bool shouldScrollToMatch = !sameHighlightedChapter;
     const bool restoreSearchFocus = m_searchBar && m_searchBar->isVisible() && m_searchEdit;
 
-    auto applyHighlight = [this, needleExpression, occurrenceIndex, shouldScrollToMatch, restoreSearchFocus]() {
-        m_activePage->runJavaScript(
-            loadScript(":/scripts/bibi_search_highlight.js")
-                .arg(needleExpression)
-                .arg(occurrenceIndex)
-                .arg(shouldScrollToMatch ? QStringLiteral("true") : QStringLiteral("false")));
+    const QJsonObject params{
+        {"needle",  query},
+        {"current", target.occurrenceIndex},
+        {"scroll",  !sameHighlightedChapter},
+        {"matches", matches},
+    };
+    // A single arg() call: the JSON is never re-scanned for placeholders.
+    const QString script = loadScript(":/scripts/bibi_search_highlight.js")
+        .arg(QString::fromUtf8(QJsonDocument(params).toJson(QJsonDocument::Compact)));
+
+    auto applyHighlight = [this, script, restoreSearchFocus]() {
+        m_activePage->runJavaScript(script);
 
         if (restoreSearchFocus) {
             QTimer::singleShot(0, this, [this] {

@@ -56,6 +56,9 @@ public:
     struct SearchResult {
         int     chapterIndex;
         int     occurrenceIndex = 0;
+        // 一致位置（searchableText() が返すテキスト上の UTF-16 オフセット）
+        int     matchStart  = 0;
+        int     matchLength = 0;
         QString chapterTitle;
         QString context;
         QString href;
@@ -63,6 +66,10 @@ public:
     // cancel が true になると途中で打ち切り、それまでの結果を返す
     QList<SearchResult> search(const QString& query,
                                const std::atomic<bool>* cancel = nullptr) const;
+
+    // 検索対象となるチャプター本文の正規化テキスト。
+    // scripts/bibi_search_highlight.js が DOM から同じ規則で同じ文字列を組み立てる。
+    static QString searchableText(const QString& html);
 
 private:
     bool parseContainer();

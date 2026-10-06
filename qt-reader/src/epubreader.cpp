@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QUrl>
 #include <QRegularExpression>
+#include <QSet>
 #include <QMutex>
 #include <QMutexLocker>
 #include <atomic>
@@ -426,87 +427,123 @@ QList<NavPoint> EpubReader::parseNavList(const QDomElement& olEl,
 }
 
 // ── Full-text search ──────────────────────────────────────────────────────
+//
+// The searchable text of a chapter is built by the rules below, and
+// scripts/bibi_search_highlight.js rebuilds exactly the same string from the
+// live DOM so that match offsets computed here can be mapped back onto text
+// nodes. Keep both implementations in sync.
+//
+//  - Walk <body> in document order; text and CDATA nodes are concatenated
+//    WITHOUT separators, so inline markup (傍点 <em>, 縦中横 <span>, <a>, ...)
+//    does not split words.
+//  - Subtrees of kSkippedSearchTags are ignored (ruby readings, images, ...).
+//  - Block-level elements (kBlockSearchTags) and <br> emit a line break
+//    before and after their content.
+//  - Runs of whitespace (space, tab, CR, LF, FF, NBSP) collapse to a single
+//    space and the result is trimmed.
 
-static bool isIgnorableSearchElement(const QString& tagName) {
-    const QString tag = tagName.toLower();
-    return tag == "script" || tag == "style" || tag == "title" ||
-           tag == "meta" || tag == "link" || tag == "head";
+namespace {
+const QSet<QString> kSkippedSearchTags = {
+    "script", "style", "head", "title", "meta", "link", "noscript", "template",
+    "rt", "rp", "svg", "img", "object", "picture", "video", "audio", "iframe",
+};
+
+const QSet<QString> kBlockSearchTags = {
+    "address", "article", "aside", "blockquote", "body", "br", "caption",
+    "dd", "div", "dl", "dt", "figcaption", "figure", "footer", "h1", "h2",
+    "h3", "h4", "h5", "h6", "header", "hr", "li", "main", "nav", "ol", "p",
+    "pre", "section", "table", "td", "th", "tr", "ul",
+};
+
+QString localTagName(const QDomElement& el) {
+    QString tag = el.tagName();
+    const int colon = tag.indexOf(u':');
+    if (colon >= 0) tag = tag.mid(colon + 1);
+    return tag.toLower();
 }
 
-static bool isImageOnlyElement(const QDomElement& el) {
-    if (el.isNull() || isIgnorableSearchElement(el.tagName())) return true;
+void collectSearchText(const QDomNode& node, QString& raw) {
+    for (QDomNode child = node.firstChild(); !child.isNull(); child = child.nextSibling()) {
+        if (child.isText() || child.isCDATASection()) {
+            raw += child.nodeValue();
+        } else if (child.isEntityReference()) {
+            collectSearchText(child, raw);
+        } else if (child.isElement()) {
+            const QString tag = localTagName(child.toElement());
+            if (kSkippedSearchTags.contains(tag)) continue;
+            const bool block = kBlockSearchTags.contains(tag);
+            if (block) raw += u'\n';
+            collectSearchText(child, raw);
+            if (block) raw += u'\n';
+        }
+    }
+}
 
-    const QString tag = el.tagName().toLower();
-    if (tag == "img" || tag == "svg" || tag == "object" || tag == "picture")
+bool isSearchWhitespace(QChar c) {
+    switch (c.unicode()) {
+    case 0x20: case 0x09: case 0x0A: case 0x0C: case 0x0D: case 0xA0:
         return true;
+    default:
+        return false;
+    }
+}
 
-    for (QDomNode n = el.firstChild(); !n.isNull(); n = n.nextSibling()) {
-        if (n.isText()) {
-            if (!n.nodeValue().trimmed().isEmpty())
-                return false;
+// Unlike QString::simplified(), leaves U+3000 (全角スペース) alone.
+QString normalizeSearchText(const QString& raw) {
+    QString out;
+    out.reserve(raw.size());
+    bool pendingSpace = false;
+    for (const QChar c : raw) {
+        if (isSearchWhitespace(c)) {
+            pendingSpace = !out.isEmpty();
             continue;
         }
-        if (n.isElement() && !isImageOnlyElement(n.toElement()))
-            return false;
+        if (pendingSpace) {
+            out += u' ';
+            pendingSpace = false;
+        }
+        out += c;
     }
-    return true;
+    return out;
 }
 
-static void appendVisibleText(const QDomNode& node, QStringList& out) {
-    if (node.isText()) {
-        const QString text = node.nodeValue().simplified();
-        if (!text.isEmpty())
-            out.append(text);
-        return;
-    }
+// Rough fallback for chapters that are not well-formed XML. Offsets may then
+// differ from the DOM; the highlight script re-searches the text in that case.
+QString fallbackSearchText(QString html) {
+    static const QRegularExpression dropped(
+        R"(<(head|script|style|rt|rp|svg)\b[^>]*>.*?</\1\s*>)",
+        QRegularExpression::CaseInsensitiveOption |
+        QRegularExpression::DotMatchesEverythingOption);
+    static const QRegularExpression blockTag(
+        R"(</?(?:p|div|h[1-6]|li|dd|dt|tr|td|th|br|hr|blockquote|section|article|table|ul|ol|dl|pre)\b[^>]*>)",
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression anyTag(R"(<[^>]*>)");
 
-    if (!node.isElement() && !node.isDocument()) return;
-    const QDomElement el = node.toElement();
-    if (!el.isNull()) {
-        if (isIgnorableSearchElement(el.tagName())) return;
-        const QString tag = el.tagName().toLower();
-        if (tag == "img" || tag == "svg" || tag == "object" || tag == "picture")
-            return;
-    }
-
-    for (QDomNode child = node.firstChild(); !child.isNull(); child = child.nextSibling())
-        appendVisibleText(child, out);
+    html.remove(dropped);
+    html.replace(blockTag, QStringLiteral("\n"));
+    html.remove(anyTag);
+    html.replace("&nbsp;", QString(QChar(0xA0)));
+    html.replace("&lt;",   "<");
+    html.replace("&gt;",   ">");
+    html.replace("&quot;", "\"");
+    html.replace("&apos;", "'");
+    html.replace("&amp;",  "&");   // last, so "&amp;lt;" stays "&lt;"
+    return normalizeSearchText(html);
+}
 }
 
-static QString extractSearchText(const QString& html) {
-    static const QRegularExpression nbsp("&nbsp;");
-
+QString EpubReader::searchableText(const QString& html) {
     QDomDocument doc;
-    QString error;
-    int line = 0;
-    int column = 0;
-    if (!doc.setContent(html, &error, &line, &column)) {
-        static const QRegularExpression tags(R"(<[^>]*>)");
-        QString text = html;
-        text.remove(tags);
-        text.replace("&lt;",   "<");
-        text.replace("&gt;",   ">");
-        text.replace("&amp;",  "&");
-        text.replace("&quot;", "\"");
-        text.replace(nbsp,     " ");
-        return text.simplified();
-    }
+    if (!doc.setContent(html))
+        return fallbackSearchText(html);
 
     QDomElement body = doc.elementsByTagName("body").at(0).toElement();
     if (body.isNull())
         body = doc.documentElement();
-    if (isImageOnlyElement(body))
-        return {};
 
-    QStringList parts;
-    appendVisibleText(body, parts);
-    QString text = parts.join(' ');
-    text.replace("&lt;",   "<");
-    text.replace("&gt;",   ">");
-    text.replace("&amp;",  "&");
-    text.replace("&quot;", "\"");
-    text.replace(nbsp,     " ");
-    return text.simplified();
+    QString raw;
+    collectSearchText(body, raw);
+    return normalizeSearchText(raw);
 }
 
 QList<EpubReader::SearchResult> EpubReader::search(const QString& query,
@@ -526,7 +563,9 @@ QList<EpubReader::SearchResult> EpubReader::search(const QString& query,
     };
     collect(m_toc);
 
-    QRegularExpression re(QRegularExpression::escape(query),
+    const QString needle = normalizeSearchText(query);
+    if (needle.isEmpty()) return results;
+    QRegularExpression re(QRegularExpression::escape(needle),
                           QRegularExpression::CaseInsensitiveOption);
 
     for (int i = 0; i < m_spine.size(); ++i) {
@@ -535,7 +574,7 @@ QList<EpubReader::SearchResult> EpubReader::search(const QString& query,
         QByteArray raw = fileData(ch.href);
         if (raw.isEmpty()) continue;
 
-        QString text = extractSearchText(QString::fromUtf8(raw));
+        const QString text = searchableText(QString::fromUtf8(raw));
         if (text.isEmpty()) continue;
         auto it = re.globalMatch(text);
         int occurrenceIndex = 0;
@@ -543,17 +582,20 @@ QList<EpubReader::SearchResult> EpubReader::search(const QString& query,
             auto match = it.next();
             if (!match.hasMatch()) continue;
 
-            int pos   = match.capturedStart();
-            int start = qMax(0, pos - 80);
-            int end   = qMin(text.size(), pos + static_cast<int>(query.size()) + 80);
+            const int pos    = static_cast<int>(match.capturedStart());
+            const int length = static_cast<int>(match.capturedLength());
+            const int start  = qMax(0, pos - 80);
+            const int end    = qMin(static_cast<int>(text.size()), pos + length + 80);
 
             SearchResult sr;
             sr.chapterIndex    = i;
             sr.occurrenceIndex = occurrenceIndex++;
+            sr.matchStart      = pos;
+            sr.matchLength     = length;
             sr.href            = ch.href;
             sr.chapterTitle    = hrefToTitle.value(ch.href,
                                      QString("Chapter %1").arg(i + 1));
-            sr.context = "..." + text.mid(start, end - start).simplified() + "...";
+            sr.context = "..." + text.mid(start, end - start) + "...";
             results.append(sr);
         }
     }

@@ -127,7 +127,7 @@ private:
     void showReaderContextMenu(QWebEngineView* view, const QPoint& pos);
     void jumpToBookmark(const Bookmark& bm);
     void jumpToReadingPosition(const ReadingPosition& pos);
-    void jumpToSearchResult(int chapterIndex, const QString& query, int occurrenceIndex = 0);
+    void jumpToSearchResult(int resultIndex);
     void saveCurrentReadingPosition();
     QString chapterLabel(int chapterIndex) const;
     void setFolderRoot(const QString& path, bool saveSetting = true);

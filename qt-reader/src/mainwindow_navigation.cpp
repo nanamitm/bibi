@@ -7,7 +7,9 @@ void MainWindow::goToChapter(int index) {
     if (!m_reader->isOpen()) return;
     if (index < 0 || index >= m_reader->chapterCount()) return;
 
-    const int fromChapter = m_currentChapter;
+    // m_currentChapter may already point at a chapter that is still loading;
+    // the swap bookkeeping must be based on what the active view really shows.
+    const int fromChapter = m_activeChapter;
     m_currentChapter = index;
     const bool scrollToEnd = m_scrollToEnd;
     m_currentScrollPosition = scrollToEnd ? 1.0 : 0.0;

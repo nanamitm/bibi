@@ -204,7 +204,8 @@ private:
 
     QHash<QString, int> m_hrefIndex; // href (フラグメントなし) → spine インデックス
 
-    int    m_currentChapter  = -1;
+    int    m_currentChapter  = -1;   // 移動先を含む「現在の章」（読み込み中でも先に進む）
+    int    m_activeChapter   = -1;   // m_activeView に実際に表示されている章
     bool   m_isRtl           = false;
     double m_zoomFactor      = 1.0;
     double m_currentScrollPosition = 0.0;

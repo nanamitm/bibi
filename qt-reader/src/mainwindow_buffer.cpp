@@ -20,9 +20,9 @@ void MainWindow::handleLoadFinished(QWebEngineView* view, bool ok) {
             m_swapCheckTimer->stop();
             if (m_swapBuffer == buf)
                 m_swapBuffer = nullptr;
-            // Restore the chapter index that goToChapter() had already advanced.
-            if (m_swapFromChapter >= 0)
-                m_currentChapter = m_swapFromChapter;
+            // Restore the chapter index that goToChapter()/goToHref() had already advanced.
+            if (m_activeChapter >= 0)
+                m_currentChapter = m_activeChapter;
             m_swapFromChapter = -1;
             m_swapToChapter   = -1;
             buf->chapter = {};
@@ -225,13 +225,16 @@ bool MainWindow::alignImageOnlyInitialLeftForView(QWebEngineView* view) const {
 void MainWindow::promoteBuffer(BufferedView& buffer) {
     QWebEngineView* oldActiveView = m_activeView;
     EpubWebPage* oldActivePage = m_activePage;
-    const int oldChapter = m_swapFromChapter;
-    const int targetChapter = m_swapToChapter;
+    // Only sequential moves keep the old view as a neighbour buffer, labelled with
+    // the chapter it actually displays.
+    const int oldChapter = m_swapFromChapter >= 0 ? m_activeChapter : -1;
+    const int targetChapter = buffer.chapter.chapterIndex;
 
     buffer.view->raise();
     buffer.view->setFocus();
     m_activeView = buffer.view;
     m_activePage = buffer.page;
+    m_activeChapter = targetChapter;
 
     const bool movedNext = oldChapter >= 0 && targetChapter == oldChapter + 1;
     const bool movedPrevious = oldChapter >= 0 && targetChapter == oldChapter - 1;

@@ -197,6 +197,8 @@ void MainWindow::setupUi() {
             if (view != m_activeView || url.scheme() != "epub") return;
             QString path = url.path().mid(1);
             int idx = hrefToChapterIndex(path);
+            if (idx >= 0)
+                m_activeChapter = idx;
             if (idx >= 0 && idx != m_currentChapter) {
                 m_currentChapter = idx;
                 updateNavigationActions();

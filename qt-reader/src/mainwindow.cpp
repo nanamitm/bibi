@@ -108,6 +108,7 @@ void MainWindow::openEpub(const QString& filePath) {
 
     m_urlScheme->setReader(m_reader);
     m_currentChapter = -1;
+    m_activeChapter = -1;
     m_currentScrollPosition = 0.0;
     invalidatePreloads();
 

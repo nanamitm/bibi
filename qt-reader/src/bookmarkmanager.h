@@ -3,6 +3,16 @@
 #include <QString>
 #include <QList>
 #include <QDateTime>
+#include <QDir>
+#include <QFileInfo>
+
+// しおり・読書位置のキーに使う EPUB パスの正規形（絶対パス・'/' 区切り・. / .. 解決済み）。
+// 起動引数（"C:\...\book.epub" や相対パス）とファイルダイアログ（"C:/.../book.epub"）で
+// 同じ本が別のキーにならないよう、パスを扱う入口ではすべてこれを通す。
+inline QString normalizedEpubPath(const QString& path) {
+    if (path.isEmpty()) return {};
+    return QFileInfo(QDir::fromNativeSeparators(path)).absoluteFilePath();
+}
 
 struct Bookmark {
     QString   id;

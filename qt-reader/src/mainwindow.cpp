@@ -88,7 +88,10 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event) {
 
 // ── EPUB Loading ──────────────────────────────────────────────────────────
 
-void MainWindow::openEpub(const QString& filePath) {
+void MainWindow::openEpub(const QString& path) {
+    // Bookmarks and reading positions are keyed by this path, so every entry
+    // point (command line, dialog, recent files, folder tab) must agree on it.
+    const QString filePath = normalizedEpubPath(path);
     saveCurrentReadingPosition();
     // Background workers read m_reader's spine/TOC; open() clears them, so both must be idle.
     cancelSearchAndWait();

@@ -29,7 +29,7 @@ QJsonObject bookmarkToJson(const Bookmark& bm) {
 Bookmark bookmarkFromJson(const QJsonObject& obj) {
     Bookmark bm;
     bm.id             = obj["id"].toString();
-    bm.epubPath       = obj["epubPath"].toString();
+    bm.epubPath       = normalizedEpubPath(obj["epubPath"].toString());
     bm.chapterIndex   = obj["chapterIndex"].toInt();
     bm.scrollPosition = qBound(0.0, obj["scrollPosition"].toDouble(), 1.0);
     bm.label          = obj["label"].toString();
@@ -50,7 +50,7 @@ QJsonObject readingPositionToJson(const ReadingPosition& pos) {
 
 ReadingPosition readingPositionFromJson(const QJsonObject& obj) {
     ReadingPosition pos;
-    pos.epubPath       = obj["epubPath"].toString();
+    pos.epubPath       = normalizedEpubPath(obj["epubPath"].toString());
     pos.chapterIndex   = obj["chapterIndex"].toInt();
     pos.scrollPosition = qBound(0.0, obj["scrollPosition"].toDouble(), 1.0);
     pos.updatedAt      = QDateTime::fromString(obj["updatedAt"].toString(), Qt::ISODate);
@@ -150,6 +150,7 @@ void BookmarkManager::addBookmark(const Bookmark& bm) {
     loadBookmarks();
 
     Bookmark normalized = bm;
+    normalized.epubPath = normalizedEpubPath(normalized.epubPath);
     if (normalized.id.isEmpty())
         normalized.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_bookmarks.append(normalized);
@@ -189,7 +190,8 @@ bool BookmarkManager::renameBookmark(const QString& id, const QString& label) {
     return false;
 }
 
-QList<Bookmark> BookmarkManager::bookmarksForEpub(const QString& epubPath) {
+QList<Bookmark> BookmarkManager::bookmarksForEpub(const QString& path) {
+    const QString epubPath = normalizedEpubPath(path);
     StorageLock lock(lockPath());
     loadBookmarks();
 
@@ -204,6 +206,7 @@ void BookmarkManager::saveReadingPosition(const ReadingPosition& pos) {
     if (pos.epubPath.isEmpty()) return;
 
     ReadingPosition normalized = pos;
+    normalized.epubPath = normalizedEpubPath(normalized.epubPath);
     normalized.scrollPosition = qBound(0.0, normalized.scrollPosition, 1.0);
     if (!normalized.updatedAt.isValid())
         normalized.updatedAt = QDateTime::currentDateTime();
@@ -222,8 +225,9 @@ void BookmarkManager::saveReadingPosition(const ReadingPosition& pos) {
     saveReadingPositions();
 }
 
-bool BookmarkManager::readingPositionForEpub(const QString& epubPath,
+bool BookmarkManager::readingPositionForEpub(const QString& path,
                                              ReadingPosition* pos) {
+    const QString epubPath = normalizedEpubPath(path);
     StorageLock lock(lockPath());
     loadReadingPositions();
     for (const ReadingPosition& existing : m_readingPositions) {
@@ -271,7 +275,10 @@ void BookmarkManager::loadBookmarks() {
     QList<Bookmark> loaded;
     bool needsSave = false;
     for (const QJsonValue& v : arr) {
-        Bookmark bm = bookmarkFromJson(v.toObject());
+        const QJsonObject obj = v.toObject();
+        Bookmark bm = bookmarkFromJson(obj);
+        if (bm.epubPath != obj["epubPath"].toString())
+            needsSave = true; // migrate a non-normalized path written by older versions
         if (bm.id.isEmpty()) {
             bm.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
             needsSave = true;
@@ -299,12 +306,32 @@ void BookmarkManager::loadReadingPositions() {
     }
 
     QList<ReadingPosition> loaded;
+    bool needsSave = false;
     for (const QJsonValue& v : arr) {
-        ReadingPosition pos = readingPositionFromJson(v.toObject());
-        if (!pos.epubPath.isEmpty())
+        const QJsonObject obj = v.toObject();
+        ReadingPosition pos = readingPositionFromJson(obj);
+        if (pos.epubPath.isEmpty()) continue;
+        if (pos.epubPath != obj["epubPath"].toString())
+            needsSave = true; // migrate a non-normalized path written by older versions
+
+        // Older versions could store one book under several spellings of its path;
+        // after normalization keep only the most recent position.
+        bool merged = false;
+        for (ReadingPosition& existing : loaded) {
+            if (existing.epubPath == pos.epubPath) {
+                if (pos.updatedAt > existing.updatedAt)
+                    existing = pos;
+                merged = true;
+                needsSave = true;
+                break;
+            }
+        }
+        if (!merged)
             loaded.append(pos);
     }
     m_readingPositions = loaded;
+    if (needsSave)
+        saveReadingPositions();
 }
 
 bool BookmarkManager::exportBackup(const QString& filePath, QString* errorMessage) {

@@ -2,6 +2,8 @@
 #include <QStandardPaths>
 #include <QDir>
 #include <QFile>
+#include <QSaveFile>
+#include <QLockFile>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -10,6 +12,9 @@
 #include <QDebug>
 
 namespace {
+constexpr int kLockTimeoutMs = 5000;
+constexpr int kStaleLockMs   = 30000;
+
 QJsonObject bookmarkToJson(const Bookmark& bm) {
     QJsonObject obj;
     obj["id"]             = bm.id;
@@ -53,40 +58,113 @@ ReadingPosition readingPositionFromJson(const QJsonObject& obj) {
         pos.updatedAt = QDateTime::currentDateTime();
     return pos;
 }
+
+// Serialises access to the storage files across processes. Unlocks on destruction.
+class StorageLock {
+public:
+    explicit StorageLock(const QString& path) : m_lock(path) {
+        m_lock.setStaleLockTime(kStaleLockMs);
+        if (!m_lock.tryLock(kLockTimeoutMs))
+            qWarning() << "BookmarkManager: cannot acquire storage lock, continuing without it:"
+                       << m_lock.error();
+    }
+
+private:
+    QLockFile m_lock;
+};
+
+enum class ReadStatus { Missing, Unreadable, Corrupt, Ok };
+
+ReadStatus readJsonArray(const QString& path, QJsonArray* out) {
+    QFile f(path);
+    if (!f.exists()) return ReadStatus::Missing;
+    if (!f.open(QIODevice::ReadOnly)) {
+        qWarning() << "BookmarkManager: cannot read" << path << ":" << f.errorString();
+        return ReadStatus::Unreadable;
+    }
+
+    QJsonParseError error;
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &error);
+    f.close();
+    if (error.error != QJsonParseError::NoError || !doc.isArray()) {
+        // Keep the broken file for manual recovery instead of silently overwriting it.
+        const QString backup = path + ".corrupt-" +
+            QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss");
+        if (QFile::rename(path, backup))
+            qWarning() << "BookmarkManager:" << path << "is corrupt; moved to" << backup;
+        else
+            qWarning() << "BookmarkManager:" << path << "is corrupt and could not be moved aside";
+        return ReadStatus::Corrupt;
+    }
+
+    *out = doc.array();
+    return ReadStatus::Ok;
+}
+
+// Writes via a temporary file and atomic rename so a crash never leaves a truncated file.
+bool writeFileAtomically(const QString& path, const QByteArray& data, QString* errorMessage) {
+    QSaveFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) {
+        if (errorMessage) *errorMessage = f.errorString();
+        return false;
+    }
+    if (f.write(data) != data.size()) {
+        if (errorMessage) *errorMessage = f.errorString();
+        f.cancelWriting();
+        return false;
+    }
+    if (!f.commit()) {
+        if (errorMessage) *errorMessage = f.errorString();
+        return false;
+    }
+    return true;
+}
 }
 
 BookmarkManager::BookmarkManager(QObject* parent) : QObject(parent) {
-    load();
+    StorageLock lock(lockPath());
+    loadBookmarks();
     loadReadingPositions();
 }
 
-QString BookmarkManager::storagePath() const {
+QString BookmarkManager::storageDir() const {
     QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir().mkpath(dir);
-    return dir + "/bookmarks.json";
+    return dir;
+}
+
+QString BookmarkManager::storagePath() const {
+    return storageDir() + "/bookmarks.json";
 }
 
 QString BookmarkManager::readingPositionsPath() const {
-    QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QDir().mkpath(dir);
-    return dir + "/reading-positions.json";
+    return storageDir() + "/reading-positions.json";
+}
+
+QString BookmarkManager::lockPath() const {
+    return storageDir() + "/storage.lock";
 }
 
 void BookmarkManager::addBookmark(const Bookmark& bm) {
+    StorageLock lock(lockPath());
+    loadBookmarks();
+
     Bookmark normalized = bm;
     if (normalized.id.isEmpty())
         normalized.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_bookmarks.append(normalized);
-    save();
+    saveBookmarks();
 }
 
 bool BookmarkManager::removeBookmark(const QString& id) {
     if (id.isEmpty()) return false;
 
+    StorageLock lock(lockPath());
+    loadBookmarks();
     for (int i = 0; i < m_bookmarks.size(); ++i) {
         if (m_bookmarks[i].id == id) {
             m_bookmarks.removeAt(i);
-            save();
+            saveBookmarks();
             return true;
         }
     }
@@ -99,17 +177,22 @@ bool BookmarkManager::renameBookmark(const QString& id, const QString& label) {
     const QString trimmed = label.trimmed();
     if (trimmed.isEmpty()) return false;
 
+    StorageLock lock(lockPath());
+    loadBookmarks();
     for (Bookmark& bm : m_bookmarks) {
         if (bm.id == id) {
             bm.label = trimmed;
-            save();
+            saveBookmarks();
             return true;
         }
     }
     return false;
 }
 
-QList<Bookmark> BookmarkManager::bookmarksForEpub(const QString& epubPath) const {
+QList<Bookmark> BookmarkManager::bookmarksForEpub(const QString& epubPath) {
+    StorageLock lock(lockPath());
+    loadBookmarks();
+
     QList<Bookmark> result;
     for (const auto& bm : m_bookmarks) {
         if (bm.epubPath == epubPath) result.append(bm);
@@ -125,6 +208,8 @@ void BookmarkManager::saveReadingPosition(const ReadingPosition& pos) {
     if (!normalized.updatedAt.isValid())
         normalized.updatedAt = QDateTime::currentDateTime();
 
+    StorageLock lock(lockPath());
+    loadReadingPositions();
     for (ReadingPosition& existing : m_readingPositions) {
         if (existing.epubPath == normalized.epubPath) {
             existing = normalized;
@@ -138,7 +223,9 @@ void BookmarkManager::saveReadingPosition(const ReadingPosition& pos) {
 }
 
 bool BookmarkManager::readingPositionForEpub(const QString& epubPath,
-                                             ReadingPosition* pos) const {
+                                             ReadingPosition* pos) {
+    StorageLock lock(lockPath());
+    loadReadingPositions();
     for (const ReadingPosition& existing : m_readingPositions) {
         if (existing.epubPath == epubPath) {
             if (pos) *pos = existing;
@@ -148,69 +235,83 @@ bool BookmarkManager::readingPositionForEpub(const QString& epubPath,
     return false;
 }
 
-void BookmarkManager::save() {
+void BookmarkManager::saveBookmarks() const {
     QJsonArray arr;
     for (const auto& bm : m_bookmarks)
         arr.append(bookmarkToJson(bm));
-    QFile f(storagePath());
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        qWarning() << "BookmarkManager: cannot open bookmarks file for writing:" << f.errorString();
-        return;
-    }
-    const QByteArray data = QJsonDocument(arr).toJson();
-    if (f.write(data) != data.size())
-        qWarning() << "BookmarkManager: bookmarks write incomplete:" << f.errorString();
+    QString error;
+    if (!writeFileAtomically(storagePath(), QJsonDocument(arr).toJson(), &error))
+        qWarning() << "BookmarkManager: cannot write bookmarks file:" << error;
 }
 
 void BookmarkManager::saveReadingPositions() const {
     QJsonArray arr;
     for (const ReadingPosition& pos : m_readingPositions)
         arr.append(readingPositionToJson(pos));
-    QFile f(readingPositionsPath());
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        qWarning() << "BookmarkManager: cannot open reading-positions file for writing:" << f.errorString();
-        return;
-    }
-    const QByteArray data = QJsonDocument(arr).toJson();
-    if (f.write(data) != data.size())
-        qWarning() << "BookmarkManager: reading-positions write incomplete:" << f.errorString();
+    QString error;
+    if (!writeFileAtomically(readingPositionsPath(), QJsonDocument(arr).toJson(), &error))
+        qWarning() << "BookmarkManager: cannot write reading-positions file:" << error;
 }
 
-void BookmarkManager::load() {
-    QFile f(storagePath());
-    if (!f.open(QIODevice::ReadOnly)) return;
-    QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
-    if (!doc.isArray()) return;
+void BookmarkManager::loadBookmarks() {
+    QJsonArray arr;
+    switch (readJsonArray(storagePath(), &arr)) {
+    case ReadStatus::Missing:
+        m_bookmarks.clear();
+        return;
+    case ReadStatus::Unreadable:
+        return; // keep the last known state
+    case ReadStatus::Corrupt:
+        saveBookmarks(); // the broken file was moved aside; restore the last known state
+        return;
+    case ReadStatus::Ok:
+        break;
+    }
 
-    m_bookmarks.clear();
+    QList<Bookmark> loaded;
     bool needsSave = false;
-    for (const QJsonValue& v : doc.array()) {
+    for (const QJsonValue& v : arr) {
         Bookmark bm = bookmarkFromJson(v.toObject());
         if (bm.id.isEmpty()) {
             bm.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
             needsSave = true;
         }
-        m_bookmarks.append(bm);
+        loaded.append(bm);
     }
+    m_bookmarks = loaded;
     if (needsSave)
-        save();
+        saveBookmarks();
 }
 
 void BookmarkManager::loadReadingPositions() {
-    QFile f(readingPositionsPath());
-    if (!f.open(QIODevice::ReadOnly)) return;
-    QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
-    if (!doc.isArray()) return;
+    QJsonArray arr;
+    switch (readJsonArray(readingPositionsPath(), &arr)) {
+    case ReadStatus::Missing:
+        m_readingPositions.clear();
+        return;
+    case ReadStatus::Unreadable:
+        return;
+    case ReadStatus::Corrupt:
+        saveReadingPositions();
+        return;
+    case ReadStatus::Ok:
+        break;
+    }
 
-    m_readingPositions.clear();
-    for (const QJsonValue& v : doc.array()) {
+    QList<ReadingPosition> loaded;
+    for (const QJsonValue& v : arr) {
         ReadingPosition pos = readingPositionFromJson(v.toObject());
         if (!pos.epubPath.isEmpty())
-            m_readingPositions.append(pos);
+            loaded.append(pos);
     }
+    m_readingPositions = loaded;
 }
 
-bool BookmarkManager::exportBackup(const QString& filePath, QString* errorMessage) const {
+bool BookmarkManager::exportBackup(const QString& filePath, QString* errorMessage) {
+    StorageLock lock(lockPath());
+    loadBookmarks();
+    loadReadingPositions();
+
     QJsonArray bookmarks;
     for (const Bookmark& bm : m_bookmarks)
         bookmarks.append(bookmarkToJson(bm));
@@ -226,17 +327,8 @@ bool BookmarkManager::exportBackup(const QString& filePath, QString* errorMessag
     root["bookmarks"] = bookmarks;
     root["readingPositions"] = readingPositions;
 
-    QFile f(filePath);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        if (errorMessage) *errorMessage = f.errorString();
-        return false;
-    }
-    const QByteArray json = QJsonDocument(root).toJson(QJsonDocument::Indented);
-    if (f.write(json) != json.size()) {
-        if (errorMessage) *errorMessage = f.errorString();
-        return false;
-    }
-    return true;
+    return writeFileAtomically(filePath, QJsonDocument(root).toJson(QJsonDocument::Indented),
+                               errorMessage);
 }
 
 bool BookmarkManager::importBackup(const QString& filePath, QString* errorMessage,
@@ -263,6 +355,10 @@ bool BookmarkManager::importBackup(const QString& filePath, QString* errorMessag
         if (errorMessage) *errorMessage = tr("対応していないバックアップ形式です。");
         return false;
     }
+
+    StorageLock lock(lockPath());
+    loadBookmarks();
+    loadReadingPositions();
 
     for (const QJsonValue& value : root["bookmarks"].toArray()) {
         Bookmark bm = bookmarkFromJson(value.toObject());
@@ -306,7 +402,7 @@ bool BookmarkManager::importBackup(const QString& filePath, QString* errorMessag
         }
     }
 
-    save();
+    saveBookmarks();
     saveReadingPositions();
     return true;
 }

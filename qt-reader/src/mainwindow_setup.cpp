@@ -158,6 +158,9 @@ void MainWindow::setupUi() {
         connect(pg, &EpubWebPage::navigationToHref, this, [this, pg](const QString& href) {
             if (m_activePage == pg) goToHref(href);
         });
+        connect(pg, &EpubWebPage::externalLinkRequested, this, [this, pg](const QUrl& url) {
+            if (m_activePage == pg) openExternalLink(url);
+        }, Qt::QueuedConnection);
         connect(pg, &EpubWebPage::navLeft, this, [this, pg]() {
             if (m_activePage == pg) onNavLeft();
         }, Qt::QueuedConnection);

@@ -16,21 +16,40 @@ signals:
     // ユーザーが EPUB 内リンクをクリックして別ドキュメントへ移動しようとしたときに発火する。
     // href は "path/to/chapter.xhtml" または "path/to/chapter.xhtml#fragment" 形式。
     void navigationToHref(const QString& href);
+    // EPUB 内の外部リンク（http / https / mailto）がクリックされたときに発火する。
+    // 画面内では開かず、確認のうえ既定のブラウザ等に渡すかは受け手が決める。
+    void externalLinkRequested(const QUrl& url);
 
 protected:
     bool acceptNavigationRequest(const QUrl& url, NavigationType type, bool isMainFrame) override {
-        if (isMainFrame && type == NavigationTypeLinkClicked
-                && url.scheme() == QLatin1String("epub")) {
-            // 同一ドキュメント内のフラグメントジャンプはブラウザに任せる。
-            if (url.path() == this->url().path())
-                return true;
-            QString href = url.path().mid(1);
-            if (url.hasFragment())
-                href += u'#' + url.fragment();
-            emit navigationToHref(href);
+        const QString scheme = url.scheme();
+        if (scheme == QLatin1String("epub")) {
+            if (isMainFrame && type == NavigationTypeLinkClicked) {
+                // 同一ドキュメント内のフラグメントジャンプはブラウザに任せる。
+                if (url.path() == this->url().path())
+                    return true;
+                QString href = url.path().mid(1);
+                if (url.hasFragment())
+                    href += u'#' + url.fragment();
+                emit navigationToHref(href);
+                return false;
+            }
+            return QWebEnginePage::acceptNavigationRequest(url, type, isMainFrame);
+        }
+
+        // 本の外への遷移はリーダー画面内では行わない。
+        if (type == NavigationTypeLinkClicked &&
+            (scheme == QLatin1String("http") || scheme == QLatin1String("https") ||
+             scheme == QLatin1String("mailto"))) {
+            emit externalLinkRequested(url);
             return false;
         }
-        return QWebEnginePage::acceptNavigationRequest(url, type, isMainFrame);
+        // iframe の about:blank / data: / blob: などは本の中身として許可する。
+        if (!isMainFrame &&
+            (scheme == QLatin1String("about") || scheme == QLatin1String("data") ||
+             scheme == QLatin1String("blob")))
+            return QWebEnginePage::acceptNavigationRequest(url, type, isMainFrame);
+        return false;
     }
 
     void javaScriptConsoleMessage(JavaScriptConsoleMessageLevel level,

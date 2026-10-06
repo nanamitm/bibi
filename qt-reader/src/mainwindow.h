@@ -111,6 +111,7 @@ private:
     void closeSearchBar();
     void clearSearchHighlights();
     void showSettings();
+    void openExternalLink(const QUrl& url);
     int firstSearchResultAtOrAfterCurrentChapter() const;
     int lastSearchResultAtOrBeforeCurrentChapter() const;
 
@@ -214,6 +215,8 @@ private:
     PreloadMode m_preloadMode = PreloadMode::NextAndPrevious;
     QSet<QWebEngineView*> m_loadedViews;
     QFuture<void> m_prefetchFuture;
+
+    bool    m_externalLinkPromptOpen = false;
 
     QTimer* m_swapCheckTimer = nullptr;
     int     m_swapCheckCount = 0;

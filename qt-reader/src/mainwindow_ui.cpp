@@ -24,6 +24,9 @@
 #include <QPalette>
 #include <QTabWidget>
 #include <QTimer>
+#include <QDesktopServices>
+#include <QMessageBox>
+#include <QUrl>
 
 void MainWindow::updateStatus() {
     if (!m_reader->isOpen() || m_currentChapter < 0) {
@@ -177,6 +180,20 @@ void MainWindow::showSettings() {
         QSettings s;
         s.setValue(kPixelSwapDetectionSettingKey, m_pixelSwapDetection);
     }
+}
+
+void MainWindow::openExternalLink(const QUrl& url) {
+    // Book scripts can trigger link clicks, so always ask, and never stack prompts.
+    if (m_externalLinkPromptOpen) return;
+    m_externalLinkPromptOpen = true;
+    const QString message =
+        tr("本の外へのリンクです。ブラウザで開きますか？") + "\n\n" + url.toDisplayString();
+    const auto answer = QMessageBox::question(
+        this, tr("外部リンク"), message,
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    m_externalLinkPromptOpen = false;
+    if (answer == QMessageBox::Yes)
+        QDesktopServices::openUrl(url);
 }
 
 void MainWindow::populateToc(const QList<NavPoint>& pts, QTreeWidgetItem* parent) {

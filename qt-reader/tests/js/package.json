@@ -1,0 +1,15 @@
+{
+  "name": "bibi-qt-reader-js-tests",
+  "private": true,
+  "description": "DOM-side tests for the scripts injected by Bibi Qt Reader",
+  "type": "module",
+  "engines": {
+    "node": ">=22.22.2"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "jsdom": "30.1.2"
+  }
+}

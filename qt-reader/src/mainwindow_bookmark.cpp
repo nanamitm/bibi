@@ -221,6 +221,12 @@ void MainWindow::showBookmarkContextMenu(const QPoint& pos) {
 }
 
 void MainWindow::jumpToBookmark(const Bookmark& bm) {
+    // goToChapter() ignores an out-of-range index; the scroll action below would
+    // then be left pending with no swap to run it.
+    if (bm.chapterIndex < 0 || bm.chapterIndex >= m_reader->chapterCount()) {
+        statusBar()->showMessage(tr("しおりの章がこの本にありません"), 3000);
+        return;
+    }
     goToChapter(bm.chapterIndex);
 
     const double pos = bm.scrollPosition;

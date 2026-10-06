@@ -25,10 +25,14 @@ void MainWindow::handleLoadFinished(QWebEngineView* view, bool ok) {
                 m_currentChapter = m_activeChapter;
             m_swapFromChapter = -1;
             m_swapToChapter   = -1;
+            // The action belonged to the failed navigation; leaving it set would
+            // block refreshPreloads() and fire on an unrelated later swap.
+            m_postSwapAction = nullptr;
             buf->chapter = {};
             updateNavigationActions();
             updateStatus();
             statusBar()->showMessage(tr("ページの読み込みに失敗しました"), 3000);
+            QTimer::singleShot(0, this, &MainWindow::refreshPreloads);
         }
         return;
     }
@@ -176,6 +180,8 @@ void MainWindow::refreshPreloads() {
 void MainWindow::invalidatePreloads() {
     if (m_swapCheckTimer)
         m_swapCheckTimer->stop();
+    // A pending swap is abandoned here, so its follow-up action must go too.
+    m_postSwapAction = nullptr;
     m_nextBuffer.chapter = {};
     m_previousBuffer.chapter = {};
     m_swapBuffer = nullptr;

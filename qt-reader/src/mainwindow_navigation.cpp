@@ -7,6 +7,10 @@ void MainWindow::goToChapter(int index) {
     if (!m_reader->isOpen()) return;
     if (index < 0 || index >= m_reader->chapterCount()) return;
 
+    // Any follow-up from an earlier navigation targets a different page; callers
+    // that need one set it after this returns.
+    m_postSwapAction = nullptr;
+
     // m_currentChapter may already point at a chapter that is still loading;
     // the swap bookkeeping must be based on what the active view really shows.
     const int fromChapter = m_activeChapter;

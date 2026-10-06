@@ -532,9 +532,56 @@ QString fallbackSearchText(QString html) {
 }
 }
 
+namespace {
+// EPUB 2 chapters often declare the XHTML 1.1 DOCTYPE and use HTML named
+// entities. Chromium resolves those for known XHTML DTDs, but QDomDocument
+// does not load the DTD: with a DOCTYPE it silently drops them, without one it
+// rejects the document. Either way the text would no longer match the DOM, so
+// rewrite the common ones as numeric references before parsing.
+QString replaceHtmlNamedEntities(const QString& html) {
+    static const QHash<QString, int> kEntities = {
+        {"nbsp", 0xA0},   {"ensp", 0x2002},  {"emsp", 0x2003},  {"thinsp", 0x2009},
+        {"zwnj", 0x200C}, {"zwj", 0x200D},   {"lrm", 0x200E},   {"rlm", 0x200F},
+        {"shy", 0xAD},    {"ndash", 0x2013}, {"mdash", 0x2014}, {"hellip", 0x2026},
+        {"lsquo", 0x2018}, {"rsquo", 0x2019}, {"sbquo", 0x201A},
+        {"ldquo", 0x201C}, {"rdquo", 0x201D}, {"bdquo", 0x201E},
+        {"laquo", 0xAB},  {"raquo", 0xBB},   {"middot", 0xB7},  {"bull", 0x2022},
+        {"prime", 0x2032}, {"Prime", 0x2033}, {"deg", 0xB0},    {"plusmn", 0xB1},
+        {"times", 0xD7},  {"divide", 0xF7},  {"sect", 0xA7},    {"para", 0xB6},
+        {"copy", 0xA9},   {"reg", 0xAE},     {"trade", 0x2122}, {"yen", 0xA5},
+        {"euro", 0x20AC}, {"cent", 0xA2},    {"pound", 0xA3},   {"iexcl", 0xA1},
+        {"iquest", 0xBF},
+    };
+    static const QRegularExpression entity(R"(&([A-Za-z][A-Za-z0-9]*);)");
+
+    QString out;
+    out.reserve(html.size());
+    qsizetype last = 0;
+    auto it = entity.globalMatch(html);
+    while (it.hasNext()) {
+        const auto match = it.next();
+        const auto code = kEntities.constFind(match.captured(1));
+        if (code == kEntities.constEnd()) continue;
+        out += QStringView(html).mid(last, match.capturedStart() - last);
+        out += QStringLiteral("&#x%1;").arg(*code, 0, 16);
+        last = match.capturedEnd();
+    }
+    out += QStringView(html).mid(last);
+    return out;
+}
+}
+
 QString EpubReader::searchableText(const QString& html) {
     QDomDocument doc;
-    if (!doc.setContent(html))
+    // Whitespace-only text nodes (e.g. the space in "<em>a</em> <em>b</em>")
+    // are part of the DOM the highlight script sees, so they must be kept.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    const bool parsed = static_cast<bool>(doc.setContent(
+        replaceHtmlNamedEntities(html), QDomDocument::ParseOption::PreserveSpacingOnlyNodes));
+#else
+    const bool parsed = doc.setContent(replaceHtmlNamedEntities(html));
+#endif
+    if (!parsed)
         return fallbackSearchText(html);
 
     QDomElement body = doc.elementsByTagName("body").at(0).toElement();

@@ -1,0 +1,125 @@
+name: CI
+
+# Runs on every branch push (tags are built and published by release.yml)
+# and on pull requests.
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  QT_VERSION: "6.7.3"
+
+jobs:
+  unit-tests:
+    name: Unit tests (Qt)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      # The tests only need Qt Core, Xml and Test, all part of the base install.
+      - name: Install Qt
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install aqtinstall
+          python3 -m aqt install-qt linux desktop "$QT_VERSION" linux_gcc_64 \
+            --outputdir "$RUNNER_TEMP/Qt"
+
+      - name: Configure
+        run: |
+          cmake -S qt-reader/tests -B qt-reader/tests/build -G Ninja \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/Qt/$QT_VERSION/gcc_64" \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build qt-reader/tests/build --parallel
+
+      - name: Test
+        run: ctest --test-dir qt-reader/tests/build --output-on-failure
+
+  js-tests:
+    name: Unit tests (injected scripts)
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: qt-reader/tests/js
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: qt-reader/tests/js/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-fund --no-audit
+
+      - name: Test
+        run: npm test
+
+  build-linux:
+    name: Build (Linux)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            libcups2-dev \
+            libgl1-mesa-dev \
+            libegl1-mesa-dev \
+            libxkbcommon-dev
+
+      - name: Install Qt
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install aqtinstall
+          python3 -m aqt install-qt linux desktop "$QT_VERSION" linux_gcc_64 \
+            --outputdir "$RUNNER_TEMP/Qt" \
+            --modules qtwebengine qtwebchannel qtpositioning qtserialport
+
+      - name: Configure
+        run: |
+          cmake -S qt-reader -B qt-reader/build -G Ninja \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/Qt/$QT_VERSION/gcc_64" \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build qt-reader/build --parallel

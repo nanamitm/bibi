@@ -54,6 +54,28 @@ cmake -B build -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6)" \
 cmake --build build --parallel
 ```
 
+## テスト
+
+WebEngine を使わない部分（EPUB 解析・全文検索・しおりの保存）は Qt Test、
+注入スクリプト（検索ハイライト）は Node と jsdom でテストします。
+どちらも `tests/fixtures/search/` の同じ期待値を使い、C++ と DOM 側の
+検索テキスト抽出が食い違わないことを確かめます。
+
+```bash
+# Qt Test（Qt Core / Xml / Test のみ必要。WebEngine は不要）
+cmake -S tests -B tests/build -DCMAKE_PREFIX_PATH=/path/to/Qt/6.x.x/gcc_64
+cmake --build tests/build --parallel
+ctest --test-dir tests/build --output-on-failure
+
+# 注入スクリプト（Node 22.22 以上 / 24.15 以上）
+cd tests/js
+npm ci
+npm test
+```
+
+GitHub Actions の CI（`.github/workflows/ci.yml`）が、ブランチへの push と
+プルリクエストのたびに上記のテストと Linux 版のビルドを実行します。
+
 ## 使い方
 
 ```bash

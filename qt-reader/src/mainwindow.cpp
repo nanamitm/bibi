@@ -42,7 +42,35 @@ MainWindow::MainWindow(QWidget* parent)
         m_splitter->restoreState(s.value("splitter").toByteArray());
 }
 
-MainWindow::~MainWindow() = default;
+MainWindow::~MainWindow() {
+    // Worker threads use m_reader, which is destroyed with this window's children.
+    // closeEvent() normally did this already; it is cheap to repeat.
+    cancelSearchAndWait();
+    m_prefetchFuture.waitForFinished();
+
+    // The filters dereference the views below.
+    qApp->removeEventFilter(this);
+    if (m_viewContainer)
+        m_viewContainer->removeEventFilter(this);
+
+    // Children are destroyed in creation order, which would delete the
+    // QWebEngineProfile before the pages that use it. Qt requires every page
+    // to be gone before its profile, so tear down views, then pages, here;
+    // the profile is deleted afterwards with the remaining children.
+    for (QWebEngineView** view : {&m_viewA, &m_viewB, &m_viewC}) {
+        delete *view;
+        *view = nullptr;
+    }
+    for (EpubWebPage** page : {&m_pageA, &m_pageB, &m_pageC}) {
+        delete *page;
+        *page = nullptr;
+    }
+    m_activeView = nullptr;
+    m_activePage = nullptr;
+    m_nextBuffer = {};
+    m_previousBuffer = {};
+    m_swapBuffer = nullptr;
+}
 
 void MainWindow::closeEvent(QCloseEvent* event) {
     saveCurrentReadingPosition();

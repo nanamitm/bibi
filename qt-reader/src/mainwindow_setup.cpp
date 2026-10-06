@@ -101,6 +101,7 @@ void MainWindow::setupUi() {
     m_sideTabs->addTab(m_searchResultTree, tr("検索結果"));
     m_sideTabs->addTab(m_folderTab, tr("フォルダー"));
 
+    // Must outlive the pages created below; ~MainWindow deletes them first.
     auto* profile = new QWebEngineProfile("BibiQtReader", this);
     profile->installUrlSchemeHandler("epub", m_urlScheme);
 

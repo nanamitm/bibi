@@ -7,6 +7,7 @@
 #include <QHash>
 #include <QMutex>
 #include <list>
+#include <atomic>
 
 struct NavPoint {
     QString label;
@@ -59,7 +60,9 @@ public:
         QString context;
         QString href;
     };
-    QList<SearchResult> search(const QString& query) const;
+    // cancel が true になると途中で打ち切り、それまでの結果を返す
+    QList<SearchResult> search(const QString& query,
+                               const std::atomic<bool>* cancel = nullptr) const;
 
 private:
     bool parseContainer();

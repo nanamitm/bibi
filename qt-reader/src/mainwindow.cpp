@@ -46,6 +46,7 @@ MainWindow::~MainWindow() = default;
 
 void MainWindow::closeEvent(QCloseEvent* event) {
     saveCurrentReadingPosition();
+    cancelSearchAndWait();
     m_prefetchFuture.waitForFinished();
     QSettings s;
     s.setValue("geometry",    saveGeometry());
@@ -89,6 +90,8 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event) {
 
 void MainWindow::openEpub(const QString& filePath) {
     saveCurrentReadingPosition();
+    // Background workers read m_reader's spine/TOC; open() clears them, so both must be idle.
+    cancelSearchAndWait();
     m_prefetchFuture.waitForFinished();
     if (!m_reader->open(filePath)) {
         QMessageBox::critical(this, tr("エラー"),

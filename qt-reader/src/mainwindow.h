@@ -5,7 +5,9 @@
 #include <QHash>
 #include <QTimer>
 #include <QSet>
+#include <atomic>
 #include <functional>
+#include <memory>
 #include "epubreader.h"
 #include "bookmarkmanager.h"
 #include "epubwebpage.h"
@@ -101,6 +103,7 @@ private:
     void onFolderFileActivated(const QModelIndex& index);
     void showSearch();
     void runSearch();
+    void cancelSearchAndWait();
     void onSearchFinished();
     void searchNext();
     void searchPrevious();
@@ -191,6 +194,7 @@ private:
     QAction* m_searchListAct = nullptr;
     QAction* m_searchMenuAct = nullptr;
     QFutureWatcher<QList<EpubReader::SearchResult>>* m_searchWatcher = nullptr;
+    std::shared_ptr<std::atomic<bool>> m_searchCancel; // 実行中の検索の中断フラグ
     std::function<void()> m_postSearchAction;
     QList<EpubReader::SearchResult> m_searchResults;
     QString m_searchQuery;

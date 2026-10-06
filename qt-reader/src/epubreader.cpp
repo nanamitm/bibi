@@ -9,6 +9,7 @@
 #include <QMutex>
 #include <QMutexLocker>
 #include <atomic>
+#include <functional>
 
 struct EpubReader::ZipImpl {
     mz_zip_archive    archive{};
@@ -508,7 +509,8 @@ static QString extractSearchText(const QString& html) {
     return text.simplified();
 }
 
-QList<EpubReader::SearchResult> EpubReader::search(const QString& query) const {
+QList<EpubReader::SearchResult> EpubReader::search(const QString& query,
+                                                  const std::atomic<bool>* cancel) const {
     QList<SearchResult> results;
     if (!m_zip->isOpen || query.isEmpty()) return results;
 
@@ -528,6 +530,7 @@ QList<EpubReader::SearchResult> EpubReader::search(const QString& query) const {
                           QRegularExpression::CaseInsensitiveOption);
 
     for (int i = 0; i < m_spine.size(); ++i) {
+        if (cancel && cancel->load()) break;
         const EpubChapter& ch = m_spine[i];
         QByteArray raw = fileData(ch.href);
         if (raw.isEmpty()) continue;

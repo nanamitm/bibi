@@ -48,10 +48,23 @@ void MainWindow::runSearch() {
     statusBar()->showMessage(tr("検索中..."));
 
     EpubReader* reader = m_reader;
+    auto cancel = std::make_shared<std::atomic<bool>>(false);
+    m_searchCancel = cancel;
     m_searchWatcher->setFuture(
-        QtConcurrent::run([reader, query]() -> QList<EpubReader::SearchResult> {
-            return reader->search(query);
+        QtConcurrent::run([reader, query, cancel]() -> QList<EpubReader::SearchResult> {
+            return reader->search(query, cancel.get());
         }));
+}
+
+void MainWindow::cancelSearchAndWait() {
+    if (!m_searchWatcher || !m_searchWatcher->isRunning()) return;
+
+    // Clearing the query turns the pending onSearchFinished() into a no-op.
+    m_postSearchAction = nullptr;
+    m_searchQuery.clear();
+    if (m_searchCancel)
+        m_searchCancel->store(true);
+    m_searchWatcher->waitForFinished();
 }
 
 void MainWindow::onSearchFinished() {
@@ -171,11 +184,7 @@ void MainWindow::openSearchResults() {
 }
 
 void MainWindow::closeSearchBar() {
-    if (m_searchWatcher && m_searchWatcher->isRunning()) {
-        m_postSearchAction = nullptr;
-        // Cannot cancel QtConcurrent::run, but clear state so onSearchFinished is a no-op.
-        m_searchQuery.clear();
-    }
+    cancelSearchAndWait();
     clearSearchHighlights();
     m_searchResults.clear();
     m_searchIndex = -1;

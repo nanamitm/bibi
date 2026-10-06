@@ -33,6 +33,7 @@ set(SOURCES
     src/epubreader.cpp
     src/epuburlscheme.cpp
     src/epubwebpage.cpp
+    src/epubrequestinterceptor.cpp
     src/bookmarkmanager.cpp
     src/recentfiles.cpp
     resources.qrc

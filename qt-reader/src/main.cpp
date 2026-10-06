@@ -4,13 +4,13 @@
 #include "mainwindow.h"
 
 // Must be called BEFORE QApplication is constructed.
+// EPUB content is untrusted: the scheme is deliberately NOT Local/LocalAccessAllowed,
+// which would give book scripts the same access to file: URLs as a local file.
 static void registerEpubScheme() {
     QWebEngineUrlScheme scheme("epub");
     scheme.setSyntax(QWebEngineUrlScheme::Syntax::Path);
     scheme.setFlags(
         QWebEngineUrlScheme::SecureScheme      |
-        QWebEngineUrlScheme::LocalScheme       |
-        QWebEngineUrlScheme::LocalAccessAllowed|
         QWebEngineUrlScheme::CorsEnabled       |
         QWebEngineUrlScheme::FetchApiAllowed
     );

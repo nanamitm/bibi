@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "mainwindow_private.h"
 #include "epuburlscheme.h"
+#include "epubrequestinterceptor.h"
 #include <QWebEngineView>
 #include <QWebEngineProfile>
 #include <QWebEngineSettings>
@@ -102,6 +103,17 @@ void MainWindow::setupUi() {
 
     auto* profile = new QWebEngineProfile("BibiQtReader", this);
     profile->installUrlSchemeHandler("epub", m_urlScheme);
+
+    {
+        // Treat books as untrusted: no file: or network access, no pop-ups.
+        // Parented to this (created after the profile) so it outlives the profile.
+        profile->setUrlRequestInterceptor(new EpubRequestInterceptor(this));
+        auto* ws = profile->settings();
+        ws->setAttribute(QWebEngineSettings::LocalContentCanAccessFileUrls, false);
+        ws->setAttribute(QWebEngineSettings::LocalContentCanAccessRemoteUrls, false);
+        ws->setAttribute(QWebEngineSettings::JavascriptCanOpenWindows, false);
+        ws->setAttribute(QWebEngineSettings::WebRTCPublicInterfacesOnly, true);
+    }
 
     {
         const QStringList candidates = { "Noto Serif CJK JP", "Noto Serif JP" };

@@ -23,6 +23,22 @@ test('missing navigation reports an error and can open another book', async ({pa
   expect(errors).toEqual([]);
 });
 
+test('relative chapter and fragment links resolve inside the EPUB', async ({page}) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto('./');
+  await page.locator('#file').setInputFiles(await reviewEpub({
+    head: '<base href="https://example.org/" target="_top"/>',
+    body: '<h1 id="first">First chapter</h1><a href="#first">Same chapter</a><a href="two.xhtml#destination">Next chapter</a>',
+  }));
+  await expect(page.locator('#status')).toContainText('章 1 / 2');
+  await page.frameLocator('iframe').getByRole('link', {name:'Same chapter'}).click();
+  await expect(page.locator('#status')).toContainText('章 1 / 2');
+  await page.frameLocator('iframe').getByRole('link', {name:'Next chapter'}).click();
+  await expect(page.locator('#status')).toContainText('章 2 / 2');
+  await expect(page.frameLocator('iframe').locator('#destination')).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test('sample: vertical reading, TOC, search, bookmarks, persisted position and settings', async ({page}) => {
   const errors=[]; page.on('pageerror', error=>{errors.push(error.message); console.log(error.message);});
   await page.goto('./');

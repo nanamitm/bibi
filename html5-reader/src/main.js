@@ -90,8 +90,13 @@ async function openFile(file) {
     };
     nextBook.ready.catch(() => {});
     // Register before opening so EPUB scripts cannot run during rendering or search.
-    nextBook.spine.hooks.content.register((doc) => {
+    nextBook.spine.hooks.content.register((doc, section) => {
       doc.querySelectorAll('script,iframe,object,embed,form,base').forEach((node) => node.remove());
+      // Ignore any base supplied by the book, but keep epub.js link resolution
+      // anchored to this chapter instead of the reader's /bibi/ URL.
+      const base = doc.createElement('base');
+      base.setAttribute('href', new URL(section.url, location.origin).href);
+      (doc.head || doc.documentElement).prepend(base);
       for (const node of doc.querySelectorAll('*')) for (const attr of [...node.attributes]) {
         if (/^on/i.test(attr.name) || (['href','src','action'].includes(attr.name) && /^\s*javascript:/i.test(attr.value))) node.removeAttribute(attr.name);
       }

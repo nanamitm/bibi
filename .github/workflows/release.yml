@@ -131,6 +131,7 @@ jobs:
           cmake --install qt-reader/build --prefix qt-reader/AppDir/usr
           install -Dm644 qt-reader/assets/app-icon.svg qt-reader/AppDir/usr/share/icons/hicolor/scalable/apps/BibiQtReader.svg
           install -Dm644 qt-reader/packaging/linux/BibiQtReader.desktop qt-reader/AppDir/usr/share/applications/BibiQtReader.desktop
+          bash qt-reader/packaging/linux/install-fonts.sh qt-reader/AppDir
 
       - name: Build AppImage
         env:

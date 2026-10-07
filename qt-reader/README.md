@@ -121,6 +121,9 @@ MIT（本プロジェクトと同じ）。依存ライブラリ:
 
 - **miniz** (MIT) — ZIP/deflate 展開
 - **Qt6** — LGPL / GPL / 商用（選択したエディションによる）
+- **Noto Sans JP / Noto Serif JP** (SIL OFL 1.1) — Linux AppImage にのみ同梱。
+  日本語フォントの無い環境でも UI と本文を表示するため、システムのフォント設定に
+  フォールバックとして追加します（`packaging/linux/install-fonts.sh`）。
 
 ## HTML5版
 

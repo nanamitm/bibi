@@ -1,4 +1,7 @@
 #include <QApplication>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QIcon>
 #include <QWebEngineUrlScheme>
 #include "mainwindow.h"
@@ -17,7 +20,24 @@ static void registerEpubScheme() {
     QWebEngineUrlScheme::registerScheme(scheme);
 }
 
+#ifdef Q_OS_LINUX
+// The AppImage bundles Japanese fonts for systems that have none. Point
+// fontconfig, used by both Qt and QtWebEngine's Chromium, at a config that adds
+// them to the system fonts. Must run before anything looks up a font.
+static void useBundledFonts() {
+    if (qEnvironmentVariableIsSet("FONTCONFIG_FILE")) return;
+    const QString exe = QFileInfo(QStringLiteral("/proc/self/exe")).symLinkTarget();
+    const QString conf = QDir::cleanPath(QFileInfo(exe).absolutePath() +
+                                         QStringLiteral("/../share/BibiQtReader/fonts/fonts.conf"));
+    if (QFileInfo::exists(conf))
+        qputenv("FONTCONFIG_FILE", QFile::encodeName(conf));
+}
+#endif
+
 int main(int argc, char* argv[]) {
+#ifdef Q_OS_LINUX
+    useBundledFonts();
+#endif
     registerEpubScheme();
 
     QApplication app(argc, argv);

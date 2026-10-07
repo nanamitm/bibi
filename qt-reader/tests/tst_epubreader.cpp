@@ -20,6 +20,25 @@ QString chapter(const QString& body) {
            "<body>" + body + "</body></html>";
 }
 
+QByteArray makeArchive(const QList<QPair<QString, QByteArray>>& files) {
+    mz_zip_archive zip{};
+    if (!mz_zip_writer_init_heap(&zip, 0, 0)) return {};
+    for (const auto& file : files) {
+        const QByteArray name = file.first.toUtf8();
+        mz_zip_writer_add_mem(&zip, name.constData(), file.second.constData(),
+                              static_cast<size_t>(file.second.size()), MZ_DEFAULT_COMPRESSION);
+    }
+    void* buffer = nullptr;
+    size_t size = 0;
+    QByteArray epub;
+    if (mz_zip_writer_finalize_heap_archive(&zip, &buffer, &size)) {
+        epub = QByteArray(static_cast<const char*>(buffer), static_cast<qsizetype>(size));
+        mz_free(buffer);
+    }
+    mz_zip_writer_end(&zip);
+    return epub;
+}
+
 // Builds a minimal EPUB 3: OEBPS/content.opf, a nav document and the given chapters.
 QByteArray makeEpub(const QList<QPair<QString, QString>>& chapters) {
     QString manifest = "<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>";
@@ -47,22 +66,7 @@ QByteArray makeEpub(const QList<QPair<QString, QString>>& chapters) {
     for (int i = 0; i < chapters.size(); ++i)
         files.append({QString("OEBPS/c%1.xhtml").arg(i + 1), chapter(chapters[i].second).toUtf8()});
 
-    mz_zip_archive zip{};
-    if (!mz_zip_writer_init_heap(&zip, 0, 0)) return {};
-    for (const auto& file : files) {
-        const QByteArray name = file.first.toUtf8();
-        mz_zip_writer_add_mem(&zip, name.constData(), file.second.constData(),
-                              static_cast<size_t>(file.second.size()), MZ_DEFAULT_COMPRESSION);
-    }
-    void* buffer = nullptr;
-    size_t size = 0;
-    QByteArray epub;
-    if (mz_zip_writer_finalize_heap_archive(&zip, &buffer, &size)) {
-        epub = QByteArray(static_cast<const char*>(buffer), static_cast<qsizetype>(size));
-        mz_free(buffer);
-    }
-    mz_zip_writer_end(&zip);
-    return epub;
+    return makeArchive(files);
 }
 
 } // namespace
@@ -159,6 +163,43 @@ private slots:
         QVERIFY(!reader.open(path));
         QVERIFY(!reader.lastError().isEmpty());
         QVERIFY(!reader.isOpen());
+    }
+
+    void preservesStructureErrorsAfterCleanup_data() {
+        QTest::addColumn<QByteArray>("container");
+        QTest::addColumn<QByteArray>("opf");
+        QTest::addColumn<QString>("expected");
+        const QByteArray validContainer =
+            "<container><rootfiles><rootfile full-path=\"book.opf\"/></rootfiles></container>";
+        QTest::newRow("missing container") << QByteArray() << QByteArray() << QString("container.xml");
+        QTest::newRow("invalid container XML") << QByteArray("<container") << QByteArray() << QString("container.xml");
+        QTest::newRow("missing OPF") << validContainer << QByteArray() << QString("OPF");
+        QTest::newRow("invalid OPF XML") << validContainer << QByteArray("<package") << QString("OPF");
+        QTest::newRow("empty spine") << validContainer << QByteArray("<package><manifest/><spine/></package>")
+                                    << QString::fromUtf8("スパイン");
+    }
+
+    void preservesStructureErrorsAfterCleanup() {
+        QFETCH(QByteArray, container);
+        QFETCH(QByteArray, opf);
+        QFETCH(QString, expected);
+        QList<QPair<QString, QByteArray>> files = {{"mimetype", "application/epub+zip"}};
+        if (!container.isEmpty()) files.append({"META-INF/container.xml", container});
+        if (!opf.isEmpty()) files.append({"book.opf", opf});
+        const QString path = m_dir.filePath("invalid-structure.epub");
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(makeArchive(files));
+        f.close();
+        EpubReader reader;
+        QVERIFY(!reader.open(path));
+        QVERIFY2(reader.lastError().contains(expected), qPrintable(reader.lastError()));
+        QVERIFY(!reader.isOpen());
+        QCOMPARE(reader.chapterCount(), 0);
+        QVERIFY(reader.fileData("mimetype").isEmpty());
+        const QString good = writeEpub("after-error.epub", {{"一", "<p>ok</p>"}});
+        QVERIFY2(reader.open(good), qPrintable(reader.lastError()));
+        QVERIFY(reader.lastError().isEmpty());
     }
 
     void rejectsPathTraversal() {

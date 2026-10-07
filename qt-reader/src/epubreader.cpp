@@ -52,7 +52,9 @@ bool EpubReader::open(const QString& filePath) {
     m_zip->isOpen = true;
 
     if (!parseContainer()) {
+        const QString error = m_lastError;
         close();
+        m_lastError = error;
         return false;
     }
     return true;

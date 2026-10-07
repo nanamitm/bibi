@@ -81,15 +81,18 @@ async function openFile(file) {
     const hash = await crypto.subtle.digest('SHA-256', bytes);
     bookKey = `bibi-html5-${Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, '0')).join('')}`;
     const nextBook = ePub(); book = nextBook;
-    // epub.js 0.3.93 resolves loaded.navigation only on success in unpack().
-    // Forward failures to that deferred promise so ready rejects instead of
-    // hanging, and consume the early rejection before open() has completed.
+    // epub.js 0.3.93 resolves loaded.navigation only on success in unpack(),
+    // so a broken nav/NCX would leave ready hanging. The navigation document
+    // is optional for reading: fall back to the empty navigation epub.js uses
+    // for books without one, and the TOC is then built from the spine.
     const loadNavigation = nextBook.loadNavigation.bind(nextBook);
     nextBook.loadNavigation = async (packaging) => {
       try { return await loadNavigation(packaging); }
-      catch (error) { nextBook.loading.navigation.reject(error); }
+      catch (error) {
+        console.warn('EPUB navigation could not be loaded; using the spine as TOC.', error);
+        return loadNavigation({ ...packaging, navPath: undefined, ncxPath: undefined, toc: undefined });
+      }
     };
-    nextBook.ready.catch(() => {});
     // Register before opening so EPUB scripts cannot run during rendering or search.
     nextBook.spine.hooks.content.register((doc, section) => {
       doc.querySelectorAll('script,iframe,object,embed,form,base').forEach((node) => node.remove());

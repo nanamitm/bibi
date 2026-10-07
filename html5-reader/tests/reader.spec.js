@@ -11,14 +11,18 @@ async function reviewEpub({ missingNavigation = false, body = '<p>First chapter<
   return {name:'review.epub', mimeType:'application/epub+zip', buffer:await zip.generateAsync({type:'nodebuffer'})};
 }
 
-test('missing navigation reports an error and can open another book', async ({page}) => {
+test('missing navigation opens with a spine TOC and can open another book', async ({page}) => {
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('./');
   await page.locator('#file').setInputFiles(await reviewEpub({missingNavigation:true}));
-  await expect(page.locator('#status')).toContainText('読み込みに失敗');
-  await expect(page.locator('#status')).toContainText('nav.xhtml');
+  await expect(page.locator('#status')).toContainText('章 1 / 2');
+  await expect(page.locator('#toc')).toContainText('章 1');
+  await expect(page.locator('#toc')).toContainText('章 2');
+  await page.locator('#toc').getByText('章 2').click();
+  await expect(page.locator('#status')).toContainText('章 2 / 2');
   await expect(page.locator('#open')).toBeEnabled();
-  await page.locator('#sample').click();
+  await page.locator('#file').setInputFiles(await reviewEpub());
+  await expect(page.locator('#toc')).toContainText('One');
   await expect(page.locator('#status')).toContainText('章 1 / 2');
   expect(errors).toEqual([]);
 });

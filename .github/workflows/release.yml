@@ -142,16 +142,15 @@ jobs:
           wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
           chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-qt-x86_64.AppImage
+          mkdir -p dist
+          export LDAI_OUTPUT="$PWD/dist/BibiQtReader-linux-x86_64.AppImage"
           ./linuxdeploy-x86_64.AppImage \
             --appdir AppDir \
             --desktop-file AppDir/usr/share/applications/BibiQtReader.desktop \
             --icon-file AppDir/usr/share/icons/hicolor/scalable/apps/BibiQtReader.svg \
             --plugin qt \
             --output appimage
-          mkdir -p dist
-          appimage="$(find . -maxdepth 1 -name '*.AppImage' -print -quit)"
-          test -n "$appimage"
-          mv "$appimage" dist/BibiQtReader-linux-x86_64.AppImage
+          bash packaging/linux/verify-appimage.sh "$LDAI_OUTPUT"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7

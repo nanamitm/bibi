@@ -6,16 +6,20 @@ const restorePosition = readFileSync(new URL('../../qt-reader/src/scripts/bibi_s
 
 // Exercise the exact scripts injected by Qt WebEngine in real Chromium, where
 // vertical-rl and RTL scrollLeft are negative and a positive value clamps to 0.
-for (const [target, writingMode, direction] of [
+for (const [target, writingMode, direction, extra = ''] of [
   ['html', 'vertical-rl', 'ltr'],
   ['body', 'vertical-rl', 'ltr'],
   ['html', 'vertical-lr', 'ltr'],
   ['html', 'horizontal-tb', 'rtl'],
   ['html', 'horizontal-tb', 'ltr'],
+  ['body', 'horizontal-tb', 'rtl'],
+  // The viewport takes writing-mode and direction from <body>, not <html>.
+  ['body', 'horizontal-tb', 'ltr', 'html{direction:rtl}'],
+  ['body', 'vertical-lr', 'ltr', 'html{writing-mode:vertical-rl}'],
 ]) {
-  test(`Qt reading position round trip: ${target} ${writingMode} ${direction}`, async ({page}) => {
+  test(`Qt reading position round trip: ${target} ${writingMode} ${direction} ${extra}`, async ({page}) => {
     const horizontal = writingMode === 'horizontal-tb';
-    const style = `<style>${target}{writing-mode:${writingMode};direction:${direction}}${horizontal ? 'body{width:2000px;height:100px}' : ''}</style>`;
+    const style = `<style>${extra}${target}{writing-mode:${writingMode};direction:${direction}}${horizontal ? 'body{width:2000px;height:100px}' : ''}</style>`;
     await page.setContent(`<!doctype html><html><head>${style}</head><body>${'<p>読書位置のテストです。</p>'.repeat(horizontal ? 1 : 80)}</body></html>`);
     const result = await page.evaluate(({getPosition, restorePosition}) => {
       const el = document.documentElement;

@@ -6,13 +6,11 @@
   var canH = el.scrollWidth  > el.clientWidth;
   var canV = el.scrollHeight > el.clientHeight;
   if ((vertical && canH) || (!canV && canH)) {
-    var htmlStyle = getComputedStyle(el);
-    var bodyStyle = document.body && getComputedStyle(document.body);
-    var writingMode = htmlStyle.writingMode;
-    if ((writingMode || '').indexOf('vertical') !== 0 && bodyStyle)
-      writingMode = bodyStyle.writingMode;
-    var negative = vertical ? writingMode === 'vertical-rl' :
-      htmlStyle.direction === 'rtl' || (bodyStyle && bodyStyle.direction === 'rtl');
+    // vertical-rl and RTL scroll towards negative scrollLeft. Probe the
+    // browser instead of inferring it from styles: the viewport may take
+    // writing-mode and direction from <body> rather than <html>.
+    el.scrollLeft = -1;
+    var negative = el.scrollLeft < 0;
     el.scrollLeft = (negative ? -1 : 1) * %1 * Math.max(0, el.scrollWidth - el.clientWidth);
   }
   else

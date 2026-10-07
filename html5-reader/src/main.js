@@ -80,6 +80,15 @@ async function openFile(file) {
     const hash = await crypto.subtle.digest('SHA-256', bytes);
     bookKey = `bibi-html5-${Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, '0')).join('')}`;
     const nextBook = ePub(); book = nextBook;
+    // epub.js 0.3.93 resolves loaded.navigation only on success in unpack().
+    // Forward failures to that deferred promise so ready rejects instead of
+    // hanging, and consume the early rejection before open() has completed.
+    const loadNavigation = nextBook.loadNavigation.bind(nextBook);
+    nextBook.loadNavigation = async (packaging) => {
+      try { return await loadNavigation(packaging); }
+      catch (error) { nextBook.loading.navigation.reject(error); }
+    };
+    nextBook.ready.catch(() => {});
     // Register before opening so EPUB scripts cannot run during rendering or search.
     nextBook.spine.hooks.content.register((doc) => {
       doc.querySelectorAll('script,iframe,object,embed,form,base').forEach((node) => node.remove());

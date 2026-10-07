@@ -1,12 +1,12 @@
 import { test, expect } from '@playwright/test';
 import JSZip from 'jszip';
-async function reviewEpub({ missingNavigation = false, body = '<p>First chapter</p>', head = '' } = {}) {
+async function reviewEpub({ missingNavigation = false, body = '<p>First chapter</p>', head = '', title = 'First' } = {}) {
   const zip = new JSZip();
   zip.file('mimetype', 'application/epub+zip');
   zip.file('META-INF/container.xml', '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/book.opf"/></rootfiles></container>');
   zip.file('OEBPS/book.opf', '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">review</dc:identifier><dc:title>Review</dc:title><dc:language>ja</dc:language></metadata><manifest><item id="one" href="Text/one.xhtml" media-type="application/xhtml+xml"/><item id="two" href="Text/two.xhtml" media-type="application/xhtml+xml"/><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/></manifest><spine><itemref idref="one"/><itemref idref="two"/></spine></package>');
   if (!missingNavigation) zip.file('OEBPS/nav.xhtml', '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol><li><a href="Text/one.xhtml">One</a></li><li><a href="Text/two.xhtml">Two</a></li></ol></nav></body></html>');
-  zip.file('OEBPS/Text/one.xhtml', `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>First</title>${head}</head><body>${body}</body></html>`);
+  zip.file('OEBPS/Text/one.xhtml', `<html xmlns="http://www.w3.org/1999/xhtml"><head><title>${title}</title>${head}</head><body>${body}</body></html>`);
   zip.file('OEBPS/Text/two.xhtml', '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Second</title></head><body><h1 id="destination">Second chapter</h1></body></html>');
   return {name:'review.epub', mimeType:'application/epub+zip', buffer:await zip.generateAsync({type:'nodebuffer'})};
 }
@@ -36,6 +36,27 @@ test('relative chapter and fragment links resolve inside the EPUB', async ({page
   await page.frameLocator('iframe').getByRole('link', {name:'Next chapter'}).click();
   await expect(page.locator('#status')).toContainText('章 2 / 2');
   await expect(page.frameLocator('iframe').locator('#destination')).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('search excludes title, CSS, ruby readings and hidden content', async ({page}) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto('./');
+  await page.locator('#file').setInputFiles(await reviewEpub({
+    title:'Needle title', head:'<style>.Needle{color:red}</style>',
+    body:'<p>Visible Needle C++</p><p hidden="hidden">Hidden Needle</p><p style="display:none">Styled Needle</p><ruby>Base<rt>Needle</rt></ruby>',
+  }));
+  await expect(page.locator('#status')).toContainText('章 1 / 2');
+  await page.locator('[data-tab=search]').click();
+  await page.locator('#query').fill('needle');
+  await page.locator('#search-button').click();
+  await expect(page.locator('#search-status')).toHaveText('1件');
+  await expect(page.locator('#results')).toContainText('Visible Needle');
+  await page.locator('#results button').click();
+  await expect(page.frameLocator('iframe').locator('body')).toContainText('Visible Needle');
+  await page.locator('#query').fill('C++');
+  await page.locator('#search-button').click();
+  await expect(page.locator('#search-status')).toHaveText('1件');
   expect(errors).toEqual([]);
 });
 

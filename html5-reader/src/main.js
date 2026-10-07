@@ -1,5 +1,6 @@
 import ePub from 'epubjs';
 import JSZip from 'jszip';
+import { findBodyMatches } from './body-search.js';
 import './style.css';
 
 const $ = (id) => document.getElementById(id);
@@ -164,7 +165,7 @@ $('search-form').onsubmit = async (event) => {
       await section.load(searchBook.load.bind(searchBook));
       try {
         if (token !== searchGeneration) return;
-        for (const match of section.find(query)) {
+        for (const match of findBodyMatches(section, query, 500 - count)) {
           if (count >= 500) break;
           const li = document.createElement('li'), button = document.createElement('button');
           button.textContent = `章 ${section.index + 1}: ${match.excerpt}`;

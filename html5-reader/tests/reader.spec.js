@@ -48,15 +48,17 @@ test('search excludes title, CSS, ruby readings and hidden content', async ({pag
   await page.goto('./');
   await page.locator('#file').setInputFiles(await reviewEpub({
     title:'Needle title', head:'<style>.Needle{color:red}</style>',
-    body:'<p>Visible Needle C++</p><p hidden="hidden">Hidden Needle</p><p style="display:none">Styled Needle</p><ruby>Base<rt>Needle</rt></ruby>',
+    body:'<p>Visible Needle C++</p><p hidden="hidden">Hidden Needle</p><p style="display:none">Styled Needle</p><div style="visibility:hidden"><p>Invisible Needle</p><p style="visibility:visible">Revealed Needle</p></div><p aria-hidden="true">Decorative Needle</p><svg xmlns="http://www.w3.org/2000/svg"><text>Graphic Needle</text></svg><ruby>Base<rt>Needle</rt></ruby>',
   }));
   await expect(page.locator('#status')).toContainText('章 1 / 2');
   await page.locator('[data-tab=search]').click();
   await page.locator('#query').fill('needle');
   await page.locator('#search-button').click();
-  await expect(page.locator('#search-status')).toHaveText('1件');
+  await expect(page.locator('#search-status')).toHaveText('2件');
   await expect(page.locator('#results')).toContainText('Visible Needle');
-  await page.locator('#results button').click();
+  await expect(page.locator('#results')).toContainText('Revealed Needle');
+  await expect(page.locator('#results')).not.toContainText(/Invisible|Decorative|Graphic/);
+  await page.locator('#results button').first().click();
   await expect(page.frameLocator('iframe').locator('body')).toContainText('Visible Needle');
   await page.locator('#query').fill('C++');
   await page.locator('#search-button').click();

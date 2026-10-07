@@ -9,12 +9,16 @@ export function findBodyMatches(section, query, limit = 500) {
   const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       if (node.parentElement.closest(excluded)) return NodeFilter.FILTER_REJECT;
+      // display:none hides the whole subtree, but visibility is inherited and
+      // a descendant can override it, so only the nearest declaration counts.
+      let visibility = '';
       for (let parent = node.parentElement; parent; parent = parent.parentElement) {
-        if (parent.style?.display === 'none' || ['hidden', 'collapse'].includes(parent.style?.visibility))
-          return NodeFilter.FILTER_REJECT;
+        if (parent.style?.display === 'none') return NodeFilter.FILTER_REJECT;
+        if (!visibility && parent.style?.visibility && parent.style.visibility !== 'inherit')
+          visibility = parent.style.visibility;
         if (parent === body) break;
       }
-      return NodeFilter.FILTER_ACCEPT;
+      return ['hidden', 'collapse'].includes(visibility) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
     },
   });
   const pattern = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');

@@ -1,0 +1,1 @@
+{"name":"bibi-html5-reader","version":"1.0.0","private":true,"type":"module","scripts":{"dev":"vite --host 127.0.0.1","build":"vite build --base=./","preview":"vite preview --host 127.0.0.1","test":"playwright test"},"dependencies":{"epubjs":"0.3.93","jszip":"3.10.1"},"devDependencies":{"@playwright/test":"1.56.1","vite":"6.4.4"},"overrides":{"@xmldom/xmldom":"^0.9.10"}}

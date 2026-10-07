@@ -121,3 +121,8 @@ MIT（本プロジェクトと同じ）。依存ライブラリ:
 
 - **miniz** (MIT) — ZIP/deflate 展開
 - **Qt6** — LGPL / GPL / 商用（選択したエディションによる）
+
+## HTML5版
+
+ブラウザー版は [Bibi HTML5 Reader](../html5-reader/README.md) を参照してください。
+公開URL: https://nanamitm.github.io/bibi/
